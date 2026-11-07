@@ -78,6 +78,27 @@ class ProtectionTests(unittest.TestCase):
         self.assertTrue(all('names' in m for m in matches))
         self.assertNotIn('private-inline-data', str(spec))
         self.assertTrue(all(entry.get('labelSelector') == {} for entry in spec['includedClusterScopedResources']))
+        core = next(entry['groupVersionKind'] for entry in spec['includedClusterScopedResources']
+                    if entry['groupVersionKind']['kind'] == 'PersistentVolume')
+        self.assertNotIn('group', core)
+        self.assertTrue(all(m.get('group') != '' for m in matches))
+        storage = next(entry['groupVersionKind'] for entry in spec['includedClusterScopedResources']
+                       if entry['groupVersionKind']['kind'] == 'StorageClass')
+        self.assertEqual(storage['group'], 'storage.k8s.io')
+
+    def test_application_ready_condition_without_state(self):
+        obj = {'status': {'conditions': [{'type': 'Ready', 'status': 'True'}],
+                          'protectionHealthState': 'None', 'protectionState': 'None'}}
+        api = FakeAPI({'/applications/test': obj})
+        with patch.object(p.time, 'sleep') as sleep:
+            self.assertEqual(p.API.wait(api, '/applications/test', 'Ready', 10), obj)
+            sleep.assert_not_called()
+
+    def test_false_ready_condition_does_not_pass(self):
+        api = FakeAPI({'/applications/test': {'status': {'conditions': [{'type': 'Ready', 'status': 'False'}]}}})
+        with patch.object(p.time, 'monotonic', side_effect=[0, 11]):
+            with self.assertRaisesRegex(ValueError, 'Waiting for'):
+                p.API.wait(api, '/applications/test', 'Ready', 10)
 
     def test_empty_application_status_fails_early(self):
         api = FakeAPI({'/applications/test': {'metadata': {'name': 'test'}}})

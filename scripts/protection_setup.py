@@ -74,7 +74,10 @@ class API:
         while True:
             obj = self.request(path)
             actual = obj.get('status', {}).get('state', 'Unknown')
-            if actual == state:
+            application_ready = '/applications/' in path and state == 'Ready' and any(
+                condition.get('type') == 'Ready' and condition.get('status') == 'True'
+                for condition in obj.get('status', {}).get('conditions', []))
+            if actual == state or application_ready:
                 return obj
             # A new Application should start reporting status promptly. An entirely
             # absent status is a controller/reconciliation diagnostic, not a long copy.
@@ -201,15 +204,18 @@ def build_application(api, plan):
                 add('', 'v1', 'Pod', ns, pod['metadata']['name'])
     matchers = []
     for group, version, kind, ns, item_name in sorted(matches):
-        matcher = {'group': group, 'version': version, 'kind': kind, 'names': [item_name]}
+        matcher = {'version': version, 'kind': kind, 'names': [item_name]}
+        if group:
+            matcher['group'] = group
         if ns:
             matcher['namespaces'] = [ns]
         matchers.append(matcher)
     return {'includedNamespaces': [{'namespace': ns, 'labelSelector': {}} for ns in sorted(plan['namespace_mapping'])],
-            # Explicit empty selectors avoid omitted-versus-empty differences when
-            # the controller serializes entries guarded by self == oldSelf.
-            # resourceFilter below still restricts these kinds to named resources.
-            'includedClusterScopedResources': [{'groupVersionKind': {'group': g, 'version': v, 'kind': k}, 'labelSelector': {}} for g, v, k in sorted(cluster_kinds)],
+            # The 26.02 controller omits the empty core API group on write-back.
+            # Sending group:"" initially caused the immutable-list check to fail
+            # in the POC; a probe omitting that field reached Ready.
+            # resourceFilter still restricts these kinds to named resources.
+            'includedClusterScopedResources': [{'groupVersionKind': dict({'version': v, 'kind': k}, **({'group': g} if g else {})), 'labelSelector': {}} for g, v, k in sorted(cluster_kinds)],
             'resourceFilter': {'resourceSelectionCriteria': 'Include', 'resourceMatchers': matchers}}
 
 
