@@ -1,0 +1,55 @@
+---
+# POC permissions: apply this same file on DC and DR as a cluster administrator.
+# Grants access in all current and future namespaces to the existing AAP service account.
+# Tokens remain in AAP credentials; this file contains no credentials.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: aap-vm-dr-poc
+rules:
+  - apiGroups: [protect.trident.netapp.io]
+    resources: ['*']
+    verbs: [get, list, watch, create, patch, update, delete]
+  - apiGroups: ['']
+    resources: [namespaces]
+    verbs: [get, list, watch, create, patch, update]
+  - apiGroups: ['']
+    resources: [persistentvolumeclaims, persistentvolumes, pods, events, configmaps, serviceaccounts, services]
+    verbs: [get, list, watch]
+  - apiGroups: [storage.k8s.io]
+    resources: [storageclasses]
+    verbs: [get, list, watch]
+  - apiGroups: [snapshot.storage.k8s.io]
+    resources: [volumesnapshotclasses, volumesnapshots, volumesnapshotcontents]
+    verbs: [get, list, watch]
+  - apiGroups: [kubevirt.io]
+    resources: [virtualmachines]
+    verbs: [get, list, watch, patch, update]
+  - apiGroups: [kubevirt.io]
+    resources: [virtualmachineinstances]
+    verbs: [get, list, watch]
+  - apiGroups: [subresources.kubevirt.io]
+    resources: [virtualmachines/start, virtualmachines/stop, virtualmachines/restart]
+    verbs: [update]
+  - apiGroups: [cdi.kubevirt.io]
+    resources: [datavolumes]
+    verbs: [get, list, watch]
+  - apiGroups: [instancetype.kubevirt.io]
+    resources: [virtualmachineinstancetypes, virtualmachineclusterinstancetypes, virtualmachinepreferences, virtualmachineclusterpreferences]
+    verbs: [get, list, watch]
+  - apiGroups: [k8s.cni.cncf.io]
+    resources: [network-attachment-definitions]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: aap-vm-dr-poc
+subjects:
+  - kind: ServiceAccount
+    name: aap-dr-automation
+    namespace: aap-automation
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: aap-vm-dr-poc
