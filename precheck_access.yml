@@ -1,0 +1,83 @@
+---
+- name: Discover OpenShift VM recovery resources
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    api_host: "{{ lookup('ansible.builtin.env', 'K8S_AUTH_HOST') | regex_replace('/+$', '') }}"
+    api_token: "{{ lookup('ansible.builtin.env', 'K8S_AUTH_API_KEY') }}"
+    api_verify_ssl: "{{ lookup('ansible.builtin.env', 'K8S_AUTH_VERIFY_SSL') | default('true', true) | bool }}"
+    api_ca: "{{ lookup('ansible.builtin.env', 'K8S_AUTH_SSL_CA_CERT') }}"
+    discovery_paths:
+      - /apis/kubevirt.io/v1/virtualmachines
+      - /apis/protect.trident.netapp.io/v1/applications
+      - /apis/protect.trident.netapp.io/v1/appvaults
+      - /apis/protect.trident.netapp.io/v1/appmirrorrelationships
+  tasks:
+    - name: Check that an OpenShift credential was attached
+      ansible.builtin.assert:
+        that:
+          - api_host | length > 0
+          - api_token | length > 0
+        fail_msg: Attach an OpenShift or Kubernetes API Bearer Token credential to this job template.
+      no_log: true
+
+    - name: Display target API
+      ansible.builtin.debug:
+        msg: "Querying {{ api_host }}"
+
+    - name: Read resources using the credential supplied by AAP
+      ansible.builtin.uri:
+        url: "{{ api_host }}{{ item }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ api_token }}"
+          Accept: application/json
+        validate_certs: "{{ api_verify_ssl }}"
+        ca_path: "{{ api_ca | default(omit, true) }}"
+        follow_redirects: none
+        use_netrc: false
+        return_content: true
+        timeout: 30
+      loop: "{{ discovery_paths }}"
+      register: discovery
+      failed_when: false
+      changed_when: false
+      no_log: true
+
+    - name: Extract only safe fields for job output
+      ansible.builtin.set_fact:
+        discovery_summary: >-
+          {{ discovery_summary | default([]) +
+             [{'path': item.item, 'status': item.status | default(-1),
+               'resources': (item.json | default({})).get('items', [])}] }}
+      loop: "{{ discovery.results }}"
+      no_log: true
+
+    - name: Report API access failures without exposing credentials
+      ansible.builtin.assert:
+        that:
+          - item.status | default(-1) | int == 200
+        fail_msg: >-
+          {{ item.path }} returned HTTP {{ item.status | default(-1) }}.
+          401 usually means an expired or invalid token; 403 means insufficient RBAC;
+          404 means the API is unavailable; -1 indicates a connection or TLS failure.
+      loop: "{{ discovery_summary }}"
+      loop_control:
+        label: "{{ item.path }}"
+
+    - name: Show discovered resource names and states
+      ansible.builtin.debug:
+        msg: |-
+          API: {{ item.path }}
+          Count: {{ item.resources | length }}
+          {% for resource in item.resources %}
+          - {{ resource.metadata.namespace | default('cluster-scoped') }}/{{ resource.metadata.name }} uid={{ resource.metadata.uid }} state={{ (resource.status | default({})).get('state', (resource.status | default({})).get('printableStatus', 'see resource conditions')) }}
+          {% endfor %}
+      loop: "{{ discovery_summary }}"
+      loop_control:
+        label: "{{ item.path }}"
+
+    - name: Explain the scope of this check
+      ansible.builtin.debug:
+        msg: API access verified. Empty lists mean no resources were found. This does not establish replication or prove recovery readiness.
