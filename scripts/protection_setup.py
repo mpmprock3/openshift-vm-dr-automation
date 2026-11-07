@@ -70,11 +70,22 @@ class API:
 
     def wait(self, path, state, timeout):
         deadline = time.monotonic() + timeout
+        empty_status_since = None
         while True:
             obj = self.request(path)
             actual = obj.get('status', {}).get('state', 'Unknown')
             if actual == state:
                 return obj
+            # A new Application should start reporting status promptly. An entirely
+            # absent status is a controller/reconciliation diagnostic, not a long copy.
+            if '/applications/' in path and not obj.get('status'):
+                if empty_status_since is None:
+                    empty_status_since = time.monotonic()
+                elif time.monotonic() - empty_status_since >= 120:
+                    raise ValueError('Application still has no status after 120 seconds: ' + path +
+                                     '. Inspect Trident Protect controller logs; no snapshot or schedule has been created by this job yet.')
+            else:
+                empty_status_since = None
             if actual in ('Failed', 'Error', 'Invalid') or time.monotonic() >= deadline:
                 # Only status, not the VM or credentials, is returned for troubleshooting.
                 raise ValueError('Waiting for ' + path + ' to become ' + state + '; status=' + json.dumps(obj.get('status', {})))
@@ -195,7 +206,10 @@ def build_application(api, plan):
             matcher['namespaces'] = [ns]
         matchers.append(matcher)
     return {'includedNamespaces': [{'namespace': ns, 'labelSelector': {}} for ns in sorted(plan['namespace_mapping'])],
-            'includedClusterScopedResources': [{'groupVersionKind': {'group': g, 'version': v, 'kind': k}} for g, v, k in sorted(cluster_kinds)],
+            # Explicit empty selectors avoid omitted-versus-empty differences when
+            # the controller serializes entries guarded by self == oldSelf.
+            # resourceFilter below still restricts these kinds to named resources.
+            'includedClusterScopedResources': [{'groupVersionKind': {'group': g, 'version': v, 'kind': k}, 'labelSelector': {}} for g, v, k in sorted(cluster_kinds)],
             'resourceFilter': {'resourceSelectionCriteria': 'Include', 'resourceMatchers': matchers}}
 
 

@@ -77,6 +77,13 @@ class ProtectionTests(unittest.TestCase):
         self.assertTrue(any(m['kind'] == 'PersistentVolume' and m['names'] == ['pv-a'] for m in matches))
         self.assertTrue(all('names' in m for m in matches))
         self.assertNotIn('private-inline-data', str(spec))
+        self.assertTrue(all(entry.get('labelSelector') == {} for entry in spec['includedClusterScopedResources']))
+
+    def test_empty_application_status_fails_early(self):
+        api = FakeAPI({'/applications/test': {'metadata': {'name': 'test'}}})
+        with patch.object(p.time, 'monotonic', side_effect=[0, 0, 0, 121]), patch.object(p.time, 'sleep'):
+            with self.assertRaisesRegex(ValueError, 'no status after 120 seconds'):
+                p.API.wait(api, '/applications/test', 'Ready', 1800)
 
     def test_vm_replacement_and_disk_change_rejected(self):
         objects, plan = fixture()
