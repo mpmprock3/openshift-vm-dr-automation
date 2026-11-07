@@ -1,0 +1,25 @@
+---
+# Apply on DC as a cluster administrator. This supplements the read-only precheck role.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aap-protection-writer
+  namespace: default
+rules:
+  - apiGroups: [protect.trident.netapp.io]
+    resources: [applications, snapshots, schedules]
+    verbs: [get, list, watch, create, patch, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aap-protection-writer
+  namespace: default
+subjects:
+  - kind: ServiceAccount
+    name: aap-dr-automation
+    namespace: aap-automation
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: aap-protection-writer

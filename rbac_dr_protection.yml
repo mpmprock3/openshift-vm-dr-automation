@@ -1,0 +1,30 @@
+---
+# Apply on DR as a cluster administrator. The administrator pre-creates the target namespace.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: vmdr
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aap-replication-writer
+  namespace: vmdr
+rules:
+  - apiGroups: [protect.trident.netapp.io]
+    resources: [appmirrorrelationships]
+    verbs: [get, list, watch, create, patch, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aap-replication-writer
+  namespace: vmdr
+subjects:
+  - kind: ServiceAccount
+    name: aap-dr-automation
+    namespace: aap-automation
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: aap-replication-writer
