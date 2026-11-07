@@ -41,7 +41,17 @@ class API:
         except urllib.error.HTTPError as exc:
             if optional and exc.code == 404:
                 return None
-            raise ValueError(method + ' ' + path + ' returned HTTP ' + str(exc.code) + '; inspect the resource/API events for details.') from None
+            detail = 'No Kubernetes denial message returned.'
+            try:
+                status = json.loads(exc.read())
+                if isinstance(status, dict) and status.get('kind') == 'Status':
+                    detail = str(status.get('message') or status.get('reason') or detail)
+            except (ValueError, UnicodeError):
+                pass
+            # Never emit headers, request bodies or the bearer token.
+            token = self.headers['Authorization'].removeprefix('Bearer ')
+            detail = detail.replace(token, '[REDACTED]')[:3000]
+            raise ValueError(method + ' ' + path + ' returned HTTP ' + str(exc.code) + ': ' + detail) from None
         except urllib.error.URLError:
             raise ValueError('API network or TLS failure; check the attached credential and connectivity.') from None
 

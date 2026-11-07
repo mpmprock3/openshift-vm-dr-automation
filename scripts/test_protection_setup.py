@@ -1,4 +1,7 @@
 import copy
+import io
+import json
+import urllib.error
 import unittest
 from unittest.mock import patch
 
@@ -52,6 +55,19 @@ def fixture():
 
 
 class ProtectionTests(unittest.TestCase):
+    def test_api_denial_reports_reason_without_token(self):
+        api = p.API.__new__(p.API)
+        api.host = 'https://dc.example'
+        api.headers = {'Authorization': 'Bearer example-token'}
+        with patch.object(p.urllib.request, 'build_opener') as factory:
+            api.opener = factory.return_value
+            payload = {'kind': 'Status', 'message': 'User test cannot create applications; example-token'}
+            api.opener.open.side_effect = urllib.error.HTTPError(api.host, 403, 'Forbidden', {}, io.BytesIO(json.dumps(payload).encode()))
+            with self.assertRaises(ValueError) as caught:
+                api.request('/applications', 'POST', {})
+            self.assertIn('cannot create applications', str(caught.exception))
+            self.assertNotIn('example-token', str(caught.exception))
+
     def test_dependency_filter_excludes_unselected_workloads_and_inline_data(self):
         objects, plan = fixture()
         spec = p.build_application(FakeAPI(objects), plan)
