@@ -1,0 +1,17 @@
+---
+# POC ONLY: grants the AAP automation service account full cluster-admin access.
+# Apply once on DC and once on DR using an existing cluster administrator session.
+# This supplements the prior bindings and does not change the account or its tokens.
+# To remove this grant: oc delete clusterrolebinding aap-vm-dr-poc-cluster-admin
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: aap-vm-dr-poc-cluster-admin
+subjects:
+  - kind: ServiceAccount
+    name: aap-dr-automation
+    namespace: aap-automation
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
