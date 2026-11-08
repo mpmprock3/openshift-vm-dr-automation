@@ -1,0 +1,13 @@
+---
+- name: Reject intervals below the asynchronous POC floor
+  ansible.builtin.assert:
+    that:
+      - requested_interval | string is match('^[0-9]+$')
+      - requested_interval | int >= 5
+      - requested_interval | int <= 1440
+    fail_msg: >-
+      This asynchronous POC accepts intervals from 5 to 1440 minutes.
+      A shorter schedule does not establish a supported two-minute RPO.
+      Five minutes is the documented FlexVol asynchronous minimum;
+      other configurations can require longer intervals (FlexGroup requires 30).
+      Confirm the backend configuration separately. An accepted interval is not an achieved-RPO guarantee.

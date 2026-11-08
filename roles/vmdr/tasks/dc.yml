@@ -6,6 +6,10 @@
       - resolved_protection_plan is mapping
       - resolved_protection_plan.source_api == cluster_api
     fail_msg: Run this job after successful validation with the same DC credential.
+- name: Recheck the interval in the workflow artifact
+  ansible.builtin.include_tasks: validate_interval.yml
+  vars:
+    requested_interval: "{{ resolved_protection_plan.replication_interval_minutes }}"
 - name: Resolve protection resource names
   ansible.builtin.set_fact:
     application_name: "{{ resolved_protection_plan.protection_plan[:40] }}-{{ (resolved_protection_plan.protection_plan | hash('sha256'))[:8] }}"

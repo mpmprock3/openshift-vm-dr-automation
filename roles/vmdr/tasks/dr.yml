@@ -6,6 +6,10 @@
       - dc_protection_result is mapping
       - dc_protection_result.plan.source_api != cluster_api
     fail_msg: Run after Configure DC Protection succeeds and attach the DR credential.
+- name: Recheck the interval in the workflow artifact
+  ansible.builtin.include_tasks: validate_interval.yml
+  vars:
+    requested_interval: "{{ dc_protection_result.plan.replication_interval_minutes }}"
 - name: Resolve DR relationship namespace
   ansible.builtin.set_fact:
     mirror_namespace: "{{ dc_protection_result.plan.namespace_mapping[dc_protection_result.application_namespace] }}"

@@ -10,11 +10,12 @@
       - "('Selected VMs' in protection_scope) == (source_vms | default([], true) | length > 0)"
       - "('All VMs in selected namespaces' in protection_scope) == (source_namespaces | default([], true) | length > 0)"
       - protection_plan | default('') is match('^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$')
-      - replication_interval_minutes | default(5) | string is match('^[0-9]+$')
-      - replication_interval_minutes | default(5) | int >= 1
-      - replication_interval_minutes | default(5) | int <= 1440
       - namespace_mapping_mode | default('') in ['Keep source namespace names', 'Use one custom destination namespace']
     fail_msg: Check scope, selected lists, plan name, replication interval and single-select namespace mapping mode.
+- name: Validate the asynchronous replication interval
+  ansible.builtin.include_tasks: validate_interval.yml
+  vars:
+    requested_interval: "{{ replication_interval_minutes | default(5) }}"
 - name: Discover source VMs
   kubernetes.core.k8s_info:
     api_version: kubevirt.io/v1

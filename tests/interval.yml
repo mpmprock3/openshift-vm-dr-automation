@@ -1,0 +1,27 @@
+---
+- name: Verify replication interval guard without accessing a cluster
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Accept the existing five-minute POC interval
+      ansible.builtin.include_role:
+        name: vmdr
+        tasks_from: validate_interval
+      vars:
+        requested_interval: 5
+    - name: Reject a two-minute interval
+      block:
+        - ansible.builtin.include_role:
+            name: vmdr
+            tasks_from: validate_interval
+          vars:
+            requested_interval: 2
+      rescue:
+        - ansible.builtin.assert:
+            that: "'This asynchronous POC accepts intervals' in ansible_failed_result.msg"
+        - ansible.builtin.set_fact:
+            short_interval_rejected: true
+    - name: Verify rejection occurred
+      ansible.builtin.assert:
+        that: short_interval_rejected | default(false)
