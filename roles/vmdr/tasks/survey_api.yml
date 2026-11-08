@@ -1,21 +1,41 @@
 ---
-- name: Call the AAP survey API
-  ansible.builtin.uri:
-    url: "{{ lookup('env', 'AAP_SURVEY_HOST') | regex_replace('/$', '') }}{{ survey_path }}"
-    method: "{{ survey_method | default('GET') }}"
-    headers:
-      Authorization: "Bearer {{ lookup('env', 'AAP_SURVEY_TOKEN') }}"
-    body_format: "{{ 'json' if survey_method | default('GET') in ['POST', 'PATCH', 'PUT'] else 'raw' }}"
-    body: "{{ survey_body | default(omit) }}"
-    return_content: true
-    follow_redirects: none
-    unredirected_headers: [Authorization]
-    use_netrc: false
-    use_proxy: "{{ aap_survey_use_proxy | default(true) }}"
-    ca_path: "{{ lookup('env', 'AAP_SURVEY_CA') | default(omit, true) }}"
-    validate_certs: true
-    status_code: [200, 201, 204]
-    timeout: 60
-  register: survey_response
-  no_log: true
-  changed_when: survey_method | default('GET') in ['POST', 'PATCH', 'PUT']
+- name: Make an authenticated AAP API request without exposing credentials
+  block:
+    - name: Call the AAP survey API
+      ansible.builtin.uri:
+        url: "{{ lookup('env', 'AAP_SURVEY_HOST') | regex_replace('/$', '') }}{{ survey_path }}"
+        method: "{{ survey_method | default('GET') }}"
+        headers:
+          Authorization: "Bearer {{ lookup('env', 'AAP_SURVEY_TOKEN') }}"
+        body_format: "{{ 'json' if survey_method | default('GET') in ['POST', 'PATCH', 'PUT'] else 'raw' }}"
+        body: "{{ survey_body | default(omit) }}"
+        return_content: true
+        follow_redirects: none
+        unredirected_headers: [Authorization]
+        use_netrc: false
+        use_proxy: "{{ aap_survey_use_proxy | default(true) }}"
+        ca_path: "{{ lookup('env', 'AAP_SURVEY_CA') | default(omit, true) }}"
+        validate_certs: true
+        status_code: [200, 201, 204]
+        timeout: 60
+      register: survey_response
+      no_log: true
+      changed_when: survey_method | default('GET') in ['POST', 'PATCH', 'PUT']
+  rescue:
+    - name: Extract only safe AAP error fields
+      ansible.builtin.set_fact:
+        safe_aap_error:
+          method: "{{ survey_method | default('GET') }}"
+          path: "{{ survey_path.split('?')[0] }}"
+          http_status: "{{ survey_response.status | default(-1) }}"
+          detail: >-
+            {{ (survey_response.json | default({}) | dict2items |
+                selectattr('key', 'in', ['detail', 'error', 'non_field_errors', 'id', 'unified_job_template']) |
+                items2dict | to_json) | replace(lookup('env', 'AAP_SURVEY_TOKEN'), '[REDACTED]') }}
+      no_log: true
+    - name: Report safe AAP API failure
+      ansible.builtin.fail:
+        msg: >-
+          AAP API request failed: {{ safe_aap_error }}.
+          If detail is empty, inspect AAP controller logs for this endpoint/status;
+          request headers, tokens and full response bodies remain hidden.

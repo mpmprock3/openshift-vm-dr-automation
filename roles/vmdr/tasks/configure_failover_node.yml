@@ -15,7 +15,7 @@
     survey_method: POST
     survey_body:
       identifier: "{{ failover_node.identifier }}"
-      unified_job_template: "{{ failover_template_ids[failover_node.job] }}"
+      unified_job_template: "{{ failover_template_ids[failover_node.job] | int }}"
   when: survey_response.json.count | default(0) == 0
 - name: Record node ID
   ansible.builtin.set_fact:
