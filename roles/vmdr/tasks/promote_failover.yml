@@ -1,0 +1,46 @@
+---
+- name: Reload recovery plan and relationship immediately before promotion
+  ansible.builtin.include_tasks: load_recovery.yml
+- name: Check source isolation evidence
+  ansible.builtin.include_tasks: isolation_guard.yml
+- name: Recheck the recovery point and relationship state
+  ansible.builtin.include_tasks: recovery_guard.yml
+- name: Record recovery point observed before promotion
+  ansible.builtin.debug:
+    msg:
+      last_transferred_snapshot: "{{ recovery_amr.status.lastTransferredSnapshot }}"
+      note: Promotion selects the latest available replica. No new source snapshot or final sync is requested; in-progress replication can advance the recovery point.
+- name: Promote the existing relationship with an atomic identity and state check
+  kubernetes.core.k8s_json_patch:
+    api_version: "{{ protect_api_version }}"
+    kind: AppMirrorRelationship
+    namespace: "{{ recovery_namespace }}"
+    name: "{{ recovery_relationship }}"
+    patch:
+      - {op: test, path: /metadata/uid, value: "{{ recovery_plan.mirror_uid }}"}
+      - {op: test, path: /metadata/resourceVersion, value: "{{ recovery_amr.metadata.resourceVersion }}"}
+      - {op: test, path: /spec/desiredState, value: Established}
+      - op: add
+        path: /metadata/annotations
+        value: "{{ recovery_amr.metadata.annotations | default({}) | combine({'vmdr.aap/request-id': failover_request_id}) }}"
+      - {op: replace, path: /spec/desiredState, value: Promoted}
+  when: recovery_amr.spec.desiredState == 'Established'
+- name: Wait for Trident Protect to complete promotion
+  ansible.builtin.include_tasks: wait.yml
+  vars:
+    wait_kind: AppMirrorRelationship
+    wait_name: "{{ recovery_relationship }}"
+    wait_namespace: "{{ recovery_namespace }}"
+    wait_state: Promoted
+- name: Pass completed promotion to recovery verification
+  ansible.builtin.set_stats:
+    per_host: false
+    aggregate: false
+    data:
+      promoted_failover:
+        plan: "{{ recovery_plan }}"
+        plan_hash: "{{ recovery_plan_hash }}"
+        request_id: "{{ failover_request_id }}"
+        snapshot_observed_before_promotion: "{{ recovery_amr.status.lastTransferredSnapshot }}"
+        promotion_status: "{{ readiness.resources[0].status }}"
+        source_handling: "{{ source_isolation_result }}"

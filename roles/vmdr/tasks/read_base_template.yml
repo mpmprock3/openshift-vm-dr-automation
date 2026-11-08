@@ -1,0 +1,22 @@
+---
+- name: Look up {{ base_template_name }}
+  ansible.builtin.include_tasks: survey_api.yml
+  vars:
+    survey_path: "/api/controller/v2/job_templates/?{{ {'name':base_template_name} | urlencode }}"
+- name: Require one existing working template
+  ansible.builtin.assert:
+    that: survey_response.json.count == 1
+    fail_msg: "Expected exactly one template named {{ base_template_name }}."
+- name: Keep base job configuration
+  ansible.builtin.set_fact:
+    base_job: "{{ survey_response.json.results[0] }}"
+- name: Read attached base credentials
+  ansible.builtin.include_tasks: survey_api.yml
+  vars:
+    survey_path: "/api/controller/v2/job_templates/{{ base_job.id }}/credentials/?page_size=200"
+- name: Require unpaginated credentials
+  ansible.builtin.assert:
+    that: survey_response.json.next | default(none) == none
+- name: Save reusable template settings and credential IDs
+  ansible.builtin.set_fact:
+    base_templates: "{{ base_templates | combine({base_template_name: base_job | combine({'credential_ids': survey_response.json.results | map(attribute='id') | list})}) }}"

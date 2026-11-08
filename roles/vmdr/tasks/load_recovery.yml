@@ -1,0 +1,67 @@
+---
+- name: Validate selected protected group
+  ansible.builtin.assert:
+    that:
+      - recovery_target | default('') is match('^[a-z0-9][a-z0-9-]*/[a-z0-9][a-z0-9.-]*[a-z0-9]$')
+    fail_msg: Select an enrolled namespace/relationship from the failover survey.
+- name: Resolve selected protection relationship
+  ansible.builtin.set_fact:
+    recovery_namespace: "{{ recovery_target.split('/')[0] }}"
+    recovery_relationship: "{{ recovery_target.split('/')[1] }}"
+- name: Require recovery identifiers and explicit data-loss acknowledgement
+  ansible.builtin.assert:
+    that:
+      - recovery_namespace | default('') is match('^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$')
+      - recovery_relationship | default('') is match('^[a-z0-9][a-z0-9.-]*[a-z0-9]$')
+      - failover_request_id | default('') is match('^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$')
+      - accept_replica_data_loss | default('No') == 'Yes'
+      - source_isolation_mode | default('') in ['Stop source VMs', 'Source externally fenced']
+    fail_msg: Select a recovery relationship, request ID and source isolation mode, and acknowledge use of the existing replica without a final sync.
+- name: Read stored protection membership from DR
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ConfigMap
+    namespace: "{{ recovery_namespace }}"
+    name: "{{ recovery_relationship }}-plan"
+  register: recovery_catalog
+- name: Require the enrolled recovery plan
+  ansible.builtin.assert:
+    that:
+      - recovery_catalog.resources | length == 1
+      - recovery_catalog.resources[0].metadata.labels['app.kubernetes.io/managed-by'] | default('') == protect_owner
+    fail_msg: Recovery catalog is missing or unmanaged. Rerun Enable DR Protection with the SAME existing plan and selections to register it first.
+- name: Load recovery plan
+  ansible.builtin.set_fact:
+    recovery_plan: "{{ recovery_catalog.resources[0].data['plan.json'] | from_json }}"
+- name: Validate recovery plan location and membership
+  ansible.builtin.assert:
+    that:
+      - recovery_plan.schema_version == 1
+      - recovery_plan.destination_api == cluster_api
+      - recovery_plan.source_api != cluster_api
+      - recovery_plan.mirror_name == recovery_relationship
+      - recovery_plan.mirror_namespace == recovery_namespace
+      - recovery_plan.selected_vms | length > 0
+- name: Read the replication relationship
+  kubernetes.core.k8s_info:
+    api_version: "{{ protect_api_version }}"
+    kind: AppMirrorRelationship
+    namespace: "{{ recovery_namespace }}"
+    name: "{{ recovery_relationship }}"
+  register: recovery_amr_query
+- name: Require the original enrolled relationship
+  ansible.builtin.assert:
+    that:
+      - recovery_amr_query.resources | length == 1
+      - recovery_amr_query.resources[0].metadata.uid == recovery_plan.mirror_uid
+      - recovery_amr_query.resources[0].spec.sourceApplicationUID == recovery_plan.application_uid
+      - recovery_amr_query.resources[0].spec.sourceApplicationName == recovery_plan.application_name
+      - recovery_amr_query.resources[0].metadata.labels['app.kubernetes.io/managed-by'] | default('') == protect_owner
+      - recovery_amr_query.resources[0].spec.namespaceMapping | sort(attribute='source') == expected_mapping | sort(attribute='source')
+    fail_msg: Relationship identity, source application or namespace mapping changed. Reconcile the catalog before failover.
+  vars:
+    expected_mapping: "{{ lookup('template', 'namespace-mapping.yaml.j2') | from_yaml }}"
+- name: Record current relationship
+  ansible.builtin.set_fact:
+    recovery_amr: "{{ recovery_amr_query.resources[0] }}"
+    recovery_plan_hash: "{{ recovery_plan | to_json(sort_keys=true) | hash('sha256') }}"

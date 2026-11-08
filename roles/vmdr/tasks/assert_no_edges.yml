@@ -1,0 +1,7 @@
+---
+- ansible.builtin.include_tasks: survey_api.yml
+  vars:
+    survey_path: "/api/controller/v2/workflow_job_template_nodes/{{ failover_node_ids[failover_node.identifier] }}/{{ edge_kind }}/"
+- ansible.builtin.assert:
+    that: survey_response.json.count == 0
+    fail_msg: Remove unexpected failure/always branches before using this failover workflow.

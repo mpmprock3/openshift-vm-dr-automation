@@ -1,0 +1,74 @@
+---
+- name: Wait for restored VM metadata
+  kubernetes.core.k8s_info:
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    namespace: "{{ recovered_vm.destination_namespace }}"
+    name: "{{ recovered_vm.vm.split('/')[1] }}"
+  register: restored_vm
+  until: restored_vm.resources | length == 1
+  retries: 60
+  delay: 5
+  no_log: true
+- name: Require restored disks to match the enrolled VM
+  ansible.builtin.assert:
+    that: restored_claims | unique | sort == recovered_vm.disks | map(attribute='pvc') | unique | sort
+    fail_msg: Restored VM disk references differ from the enrolled plan. Inspect before starting it.
+  vars:
+    restored_claims: >-
+      {{ (restored_vm.resources[0].spec.template.spec.volumes | default([]) | selectattr('persistentVolumeClaim', 'defined') | map(attribute='persistentVolumeClaim.claimName') | list) +
+         (restored_vm.resources[0].spec.template.spec.volumes | default([]) | selectattr('dataVolume', 'defined') | map(attribute='dataVolume.name') | list) }}
+- name: Require recovered disks to remain Bound
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: PersistentVolumeClaim
+    namespace: "{{ recovered_vm.destination_namespace }}"
+    name: "{{ item.pvc }}"
+  loop: "{{ recovered_vm.disks }}"
+  register: restored_disk
+  failed_when: restored_disk.resources | length != 1 or restored_disk.resources[0].status.phase | default('') != 'Bound'
+- name: Inspect restored VMI before requesting start
+  kubernetes.core.k8s_info:
+    api_version: kubevirt.io/v1
+    kind: VirtualMachineInstance
+    namespace: "{{ recovered_vm.destination_namespace }}"
+    name: "{{ recovered_vm.vm.split('/')[1] }}"
+  register: restored_vmi
+  no_log: true
+- name: Request start of a restored halted or manually managed VM
+  ansible.builtin.uri:
+    url: "{{ cluster_api }}/apis/subresources.kubevirt.io/v1/namespaces/{{ recovered_vm.destination_namespace }}/virtualmachines/{{ recovered_vm.vm.split('/')[1] }}/start"
+    method: PUT
+    headers:
+      Authorization: "Bearer {{ lookup('env', 'K8S_AUTH_API_KEY') }}"
+    body_format: json
+    body: {}
+    status_code: [200, 202, 409]
+    follow_redirects: none
+    unredirected_headers: [Authorization]
+    use_netrc: false
+    ca_path: "{{ lookup('env', 'K8S_AUTH_SSL_CA_CERT') | default(omit, true) }}"
+    validate_certs: "{{ lookup('env', 'K8S_AUTH_VERIFY_SSL') | default('true', true) | bool }}"
+  register: vm_start_request
+  changed_when: vm_start_request.status in [200, 202]
+  when:
+    - restored_vmi.resources | length == 0
+    - restored_vm.resources[0].spec.runStrategy | default('Halted' if not restored_vm.resources[0].spec.running | default(false) else 'Always') in ['Halted', 'Manual', 'Once']
+  no_log: true
+- name: Wait for recovered VMI to be Running and Ready
+  kubernetes.core.k8s_info:
+    api_version: kubevirt.io/v1
+    kind: VirtualMachineInstance
+    namespace: "{{ recovered_vm.destination_namespace }}"
+    name: "{{ recovered_vm.vm.split('/')[1] }}"
+  register: running_vmi
+  until: >-
+    running_vmi.resources | length == 1 and
+    running_vmi.resources[0].status.phase | default('') == 'Running' and
+    running_vmi.resources[0].status.conditions | default([]) | selectattr('type', 'equalto', 'Ready') | selectattr('status', 'equalto', 'True') | list | length > 0
+  retries: 120
+  delay: 5
+  no_log: true
+- name: Record recovered VM readiness and reported interfaces
+  ansible.builtin.set_fact:
+    recovered_vm_report: "{{ recovered_vm_report + [{'source_vm': recovered_vm.vm, 'destination_vm': recovered_vm.destination_namespace ~ '/' ~ recovered_vm.vm.split('/')[1], 'phase': running_vmi.resources[0].status.phase, 'interfaces': running_vmi.resources[0].status.interfaces | default([]), 'guest_agent_connected': running_vmi.resources[0].status.conditions | default([]) | selectattr('type', 'equalto', 'AgentConnected') | selectattr('status', 'equalto', 'True') | list | length > 0}] }}"

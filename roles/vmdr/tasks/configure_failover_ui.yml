@@ -1,0 +1,106 @@
+---
+- name: Require the AAP API credential
+  ansible.builtin.assert:
+    that:
+      - lookup('env', 'AAP_SURVEY_HOST') is match('^https://[^/]+/?$')
+      - lookup('env', 'AAP_SURVEY_TOKEN') | length > 0
+  no_log: true
+- name: Initialize existing template configuration
+  ansible.builtin.set_fact:
+    base_templates: {}
+    failover_template_ids: {}
+    failover_node_ids: {}
+- name: Read configuration from the existing working job templates
+  ansible.builtin.include_tasks: read_base_template.yml
+  loop: [Configure DC Protection, Establish DR Replication, Refresh VM Choices]
+  loop_control:
+    loop_var: base_template_name
+- name: Find the existing protection workflow organization
+  ansible.builtin.include_tasks: survey_api.yml
+  vars:
+    survey_path: "/api/controller/v2/workflow_job_templates/?{{ {'name':'Enable DR Protection'} | urlencode }}"
+- name: Require the existing protection workflow
+  ansible.builtin.assert:
+    that: survey_response.json.count == 1
+- name: Record organization and desired job definitions
+  ansible.builtin.set_fact:
+    failover_organization: "{{ survey_response.json.results[0].organization }}"
+    failover_job_definitions:
+      - {name: Prepare DR Failover, playbook: prepare_failover.yml, base: Establish DR Replication}
+      - {name: Isolate Source VMs, playbook: isolate_source.yml, base: Configure DC Protection}
+      - {name: Promote DR Replica, playbook: promote_dr_replica.yml, base: Establish DR Replication}
+      - {name: Verify DR Recovery, playbook: verify_dr_recovery.yml, base: Establish DR Replication}
+      - {name: Refresh Recovery Choices, playbook: refresh_recovery_choices.yml, base: Establish DR Replication}
+- name: Create or validate the five job templates
+  ansible.builtin.include_tasks: configure_failover_job.yml
+  loop: "{{ failover_job_definitions }}"
+  loop_control:
+    loop_var: failover_job
+    label: "{{ failover_job.name }}"
+- name: Find existing failover workflow
+  ansible.builtin.include_tasks: survey_api.yml
+  vars:
+    survey_path: "/api/controller/v2/workflow_job_templates/?{{ {'name':'Fail Over to DR'} | urlencode }}"
+- name: Reject ambiguous or unmanaged workflows
+  ansible.builtin.assert:
+    that:
+      - survey_response.json.count | int <= 1
+      - survey_response.json.count == 0 or survey_response.json.results[0].description == 'Managed by vmdr native failover setup'
+      - survey_response.json.count == 0 or not survey_response.json.results[0].allow_simultaneous
+      - survey_response.json.count == 0 or survey_response.json.results[0].organization == failover_organization
+- name: Create workflow with concurrent launches disabled
+  ansible.builtin.include_tasks: survey_api.yml
+  vars:
+    survey_path: /api/controller/v2/workflow_job_templates/
+    survey_method: POST
+    survey_body:
+      name: Fail Over to DR
+      description: Managed by vmdr native failover setup
+      organization: "{{ failover_organization }}"
+      allow_simultaneous: false
+      survey_enabled: true
+  when: survey_response.json.count | default(0) == 0
+- name: Record workflow ID
+  ansible.builtin.set_fact:
+    failover_workflow_id: "{{ survey_response.json.id | default((survey_response.json.results | default([{}]) | first).id) }}"
+- name: Read existing workflow survey
+  ansible.builtin.include_tasks: survey_api.yml
+  vars:
+    survey_path: "/api/controller/v2/workflow_job_templates/{{ failover_workflow_id }}/survey_spec/"
+- name: Install initial survey only when it is empty
+  ansible.builtin.include_tasks: survey_api.yml
+  vars:
+    survey_path: "/api/controller/v2/workflow_job_templates/{{ failover_workflow_id }}/survey_spec/"
+    survey_method: POST
+    survey_body: "{{ lookup('file', playbook_dir ~ '/aap/failover-survey.json') | from_json }}"
+  when: survey_response.json.spec | default([]) | length == 0
+- name: Read workflow nodes
+  ansible.builtin.include_tasks: survey_api.yml
+  vars:
+    survey_path: "/api/controller/v2/workflow_job_templates/{{ failover_workflow_id }}/workflow_nodes/?page_size=200"
+- name: Reject unexpected existing workflow nodes
+  ansible.builtin.assert:
+    that:
+      - survey_response.json.next | default(none) == none
+      - survey_response.json.results | map(attribute='identifier') | difference(['vmdr-prepare','vmdr-source','vmdr-promote','vmdr-verify']) | length == 0
+- name: Create the four workflow nodes
+  ansible.builtin.include_tasks: configure_failover_node.yml
+  loop:
+    - {identifier: vmdr-prepare, job: Prepare DR Failover}
+    - {identifier: vmdr-source, job: Isolate Source VMs}
+    - {identifier: vmdr-promote, job: Promote DR Replica}
+    - {identifier: vmdr-verify, job: Verify DR Recovery}
+  loop_control:
+    loop_var: failover_node
+- name: Connect success-only workflow stages
+  ansible.builtin.include_tasks: configure_failover_edge.yml
+  loop:
+    - {source: vmdr-prepare, destination: vmdr-source}
+    - {source: vmdr-source, destination: vmdr-promote}
+    - {source: vmdr-promote, destination: vmdr-verify}
+    - {source: vmdr-verify, destination: ''}
+  loop_control:
+    loop_var: failover_edge
+- name: Report setup completion without launching recovery
+  ansible.builtin.debug:
+    msg: AAP workflow Fail Over to DR and five job templates are configured. Run Refresh Recovery Choices, then open a new workflow launch form. No failover has been launched.

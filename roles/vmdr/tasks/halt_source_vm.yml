@@ -1,0 +1,39 @@
+---
+- name: Read source VM {{ source_vm.vm }}
+  kubernetes.core.k8s_info:
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    namespace: "{{ source_vm.vm.split('/')[0] }}"
+    name: "{{ source_vm.vm.split('/')[1] }}"
+  register: halt_vm_query
+  no_log: true
+- name: Require the originally protected VM identity
+  ansible.builtin.assert:
+    that:
+      - halt_vm_query.resources | length == 1
+      - halt_vm_query.resources[0].metadata.uid == source_vm.uid
+    fail_msg: Source VM was deleted or recreated. Source isolation needs review.
+- name: Set source VM run strategy to Halted
+  kubernetes.core.k8s_json_patch:
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    namespace: "{{ source_vm.vm.split('/')[0] }}"
+    name: "{{ source_vm.vm.split('/')[1] }}"
+    patch: >-
+      {{ [{'op':'test', 'path':'/metadata/uid', 'value': source_vm.uid},
+          {'op':'test', 'path':'/metadata/resourceVersion', 'value': halt_vm_query.resources[0].metadata.resourceVersion}] +
+         ([{'op':'remove','path':'/spec/running'}] if halt_vm_query.resources[0].spec.running is defined else []) +
+         [{'op':'add','path':'/spec/runStrategy','value':'Halted'}] }}
+  when: halt_vm_query.resources[0].spec.runStrategy | default('') != 'Halted'
+  no_log: true
+- name: Wait for source VMI termination without force deletion
+  kubernetes.core.k8s_info:
+    api_version: kubevirt.io/v1
+    kind: VirtualMachineInstance
+    namespace: "{{ source_vm.vm.split('/')[0] }}"
+    name: "{{ source_vm.vm.split('/')[1] }}"
+  register: halted_vmi
+  until: halted_vmi.resources | length == 0
+  retries: 60
+  delay: 5
+  no_log: true

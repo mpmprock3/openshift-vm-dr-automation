@@ -5,7 +5,7 @@
     method: "{{ survey_method | default('GET') }}"
     headers:
       Authorization: "Bearer {{ lookup('env', 'AAP_SURVEY_TOKEN') }}"
-    body_format: "{{ 'json' if survey_method | default('GET') == 'POST' else 'raw' }}"
+    body_format: "{{ 'json' if survey_method | default('GET') in ['POST', 'PATCH', 'PUT'] else 'raw' }}"
     body: "{{ survey_body | default(omit) }}"
     return_content: true
     follow_redirects: none
@@ -18,4 +18,4 @@
     timeout: 60
   register: survey_response
   no_log: true
-  changed_when: survey_method | default('GET') == 'POST'
+  changed_when: survey_method | default('GET') in ['POST', 'PATCH', 'PUT']

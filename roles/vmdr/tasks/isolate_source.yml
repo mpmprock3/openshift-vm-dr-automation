@@ -1,0 +1,76 @@
+---
+- name: Require the preflight workflow artifact
+  ansible.builtin.assert:
+    that:
+      - prepared_failover is defined
+      - prepared_failover.request_id == failover_request_id
+      - prepared_failover.source_mode == source_isolation_mode
+      - accept_replica_data_loss | default('No') == 'Yes'
+- name: Stop the source through its API when requested
+  when: source_isolation_mode == 'Stop source VMs'
+  block:
+    - name: Validate the source credential
+      ansible.builtin.include_tasks: credentials.yml
+    - name: Require the enrolled source API
+      ansible.builtin.assert:
+        that: cluster_api == prepared_failover.plan.source_api
+    - name: Verify source Application identity
+      kubernetes.core.k8s_info:
+        api_version: "{{ protect_api_version }}"
+        kind: Application
+        namespace: "{{ prepared_failover.plan.application_namespace }}"
+        name: "{{ prepared_failover.plan.application_name }}"
+      register: source_application
+    - name: Require the original protected source Application
+      ansible.builtin.assert:
+        that:
+          - source_application.resources | length == 1
+          - source_application.resources[0].metadata.uid == prepared_failover.plan.application_uid
+    - name: Read the enrolled source snapshot schedule
+      kubernetes.core.k8s_info:
+        api_version: "{{ protect_api_version }}"
+        kind: Schedule
+        namespace: "{{ prepared_failover.plan.application_namespace }}"
+        name: "{{ prepared_failover.plan.schedule }}"
+      register: source_schedule
+    - name: Require the expected managed schedule
+      ansible.builtin.assert:
+        that:
+          - source_schedule.resources | length == 1
+          - source_schedule.resources[0].spec.applicationRef == prepared_failover.plan.application_name
+          - source_schedule.resources[0].metadata.labels['app.kubernetes.io/managed-by'] | default('') == protect_owner
+    - name: Pause the enrolled source schedule without taking a final snapshot
+      kubernetes.core.k8s_json_patch:
+        api_version: "{{ protect_api_version }}"
+        kind: Schedule
+        namespace: "{{ prepared_failover.plan.application_namespace }}"
+        name: "{{ prepared_failover.plan.schedule }}"
+        patch:
+          - {op: test, path: /metadata/resourceVersion, value: "{{ source_schedule.resources[0].metadata.resourceVersion }}"}
+          - {op: add, path: /spec/enabled, value: false}
+      when: source_schedule.resources[0].spec.enabled | default(true)
+    - name: Stop each source VM and wait for its VMI to disappear
+      ansible.builtin.include_tasks: halt_source_vm.yml
+      loop: "{{ prepared_failover.plan.selected_vms }}"
+      loop_control:
+        loop_var: source_vm
+        label: "{{ source_vm.vm }}"
+- name: Require explicit external fencing evidence without contacting DC
+  ansible.builtin.assert:
+    that:
+      - source_fencing_confirmed | default('No') == 'Yes'
+      - fencing_reference | default('') | trim | length > 0
+    fail_msg: Externally fenced mode requires confirmation and a reference describing the completed isolation. Unreachable DC alone is not proof of fencing.
+  when: source_isolation_mode == 'Source externally fenced'
+- name: Record source isolation evidence for promotion
+  ansible.builtin.set_stats:
+    per_host: false
+    aggregate: false
+    data:
+      source_isolation_result:
+        request_id: "{{ failover_request_id }}"
+        plan_hash: "{{ prepared_failover.plan_hash }}"
+        mode: "{{ source_isolation_mode }}"
+        confirmed_at: "{{ now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') }}"
+        evidence: "{{ fencing_reference | default('') if source_isolation_mode == 'Source externally fenced' else 'Source runStrategy Halted and no source VMI observed; enrolled schedule paused.' }}"
+        externally_attested: "{{ source_isolation_mode == 'Source externally fenced' }}"

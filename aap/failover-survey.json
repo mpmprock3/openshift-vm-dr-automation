@@ -1,0 +1,94 @@
+{
+  "name": "Existing-replica failover",
+  "description": "Promote an enrolled DR replica. No new source snapshot or final synchronization.",
+  "spec": [
+    {
+      "question_name": "Which protected VM group should fail over?",
+      "question_description": "",
+      "variable": "recovery_target",
+      "type": "multiplechoice",
+      "required": true,
+      "default": "",
+      "choices": "Run Refresh Recovery Choices first",
+      "min": 0,
+      "max": 1024
+    },
+    {
+      "question_name": "Failover request ID (reuse this ID when retrying)",
+      "question_description": "",
+      "variable": "failover_request_id",
+      "type": "text",
+      "required": true,
+      "default": "",
+      "choices": "",
+      "min": 1,
+      "max": 63
+    },
+    {
+      "question_name": "How will the source be isolated?",
+      "question_description": "",
+      "variable": "source_isolation_mode",
+      "type": "multiplechoice",
+      "required": true,
+      "default": "Stop source VMs",
+      "choices": "Stop source VMs\nSource externally fenced",
+      "min": 0,
+      "max": 1024
+    },
+    {
+      "question_name": "Accept recovery from the existing replica without a final source sync?",
+      "question_description": "",
+      "variable": "accept_replica_data_loss",
+      "type": "multiplechoice",
+      "required": true,
+      "default": "No",
+      "choices": "No\nYes",
+      "min": 0,
+      "max": 1024
+    },
+    {
+      "question_name": "Maximum replicated snapshot completion age in minutes (not an RPO guarantee)",
+      "question_description": "",
+      "variable": "max_snapshot_completion_age_minutes",
+      "type": "integer",
+      "required": true,
+      "default": 15,
+      "choices": "",
+      "min": 5,
+      "max": 10080
+    },
+    {
+      "question_name": "For external fencing: is source isolation completed?",
+      "question_description": "",
+      "variable": "source_fencing_confirmed",
+      "type": "multiplechoice",
+      "required": false,
+      "default": "No",
+      "choices": "No\nYes",
+      "min": 0,
+      "max": 1024
+    },
+    {
+      "question_name": "For external fencing: describe the completed isolation or ticket reference",
+      "question_description": "",
+      "variable": "fencing_reference",
+      "type": "text",
+      "required": false,
+      "default": "",
+      "choices": "",
+      "min": 0,
+      "max": 1024
+    },
+    {
+      "question_name": "Optional application health URL reachable from AAP (HTTP 200 expected)",
+      "question_description": "",
+      "variable": "application_health_url",
+      "type": "text",
+      "required": false,
+      "default": "",
+      "choices": "",
+      "min": 0,
+      "max": 1024
+    }
+  ]
+}

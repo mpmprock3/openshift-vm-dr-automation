@@ -78,6 +78,8 @@
   ansible.builtin.assert:
     that: mirror_established | bool
     fail_msg: "Replication timed out. Last status: {{ mirror_status }}. No resources were deleted or promoted."
+- name: Save the verified recovery plan on DR
+  ansible.builtin.include_tasks: catalog.yml
 - name: Record replication outcome
   ansible.builtin.set_stats:
     per_host: false

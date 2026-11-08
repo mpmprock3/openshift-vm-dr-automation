@@ -1,0 +1,52 @@
+---
+- name: Load enrolled recovery plan
+  ansible.builtin.include_tasks: load_recovery.yml
+- name: Validate existing replica and rerun state
+  ansible.builtin.include_tasks: recovery_guard.yml
+- name: Discover DR nodes
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Node
+  register: recovery_nodes
+- name: Initialize hardware virtualization candidates
+  ansible.builtin.set_fact:
+    recovery_candidates: []
+- name: Identify Ready schedulable nodes advertising KVM
+  ansible.builtin.set_fact:
+    recovery_candidates: "{{ recovery_candidates + [item.metadata.name] }}"
+  loop: "{{ recovery_nodes.resources }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+  when:
+    - not item.spec.unschedulable | default(false)
+    - item.status.conditions | selectattr('type', 'equalto', 'Ready') | selectattr('status', 'equalto', 'True') | list | length > 0
+    - item.status.allocatable['devices.kubevirt.io/kvm'] | default('0') | int > 0
+- name: Require a DR virtualization candidate
+  ansible.builtin.assert:
+    that: recovery_candidates | length > 0
+    fail_msg: No Ready schedulable DR node advertises KVM. Prepare OpenShift Virtualization compute before stopping source VMs.
+- name: Verify destination disks and check for unrelated VMs
+  ansible.builtin.include_tasks: recovery_destination.yml
+  loop: "{{ recovery_plan.selected_vms }}"
+  loop_control:
+    loop_var: recovery_vm
+    label: "{{ recovery_vm.vm }}"
+- name: Display the recovery scope and recovery point
+  ansible.builtin.debug:
+    msg:
+      relationship: "{{ recovery_namespace }}/{{ recovery_relationship }}"
+      entire_protected_group: "{{ recovery_plan.selected_vms | map(attribute='vm') | list }}"
+      snapshot: "{{ recovery_amr.status.lastTransferredSnapshot }}"
+      snapshot_completion_age_seconds: "{{ recovery_snapshot_age_seconds }}"
+      source_handling: "{{ source_isolation_mode }}"
+      limitations: No new source snapshot or final sync. KVM-node and PVC checks do not prove scheduling capacity, network reachability, guest IP preservation or application consistency.
+- name: Pass prepared recovery plan to the next workflow node
+  ansible.builtin.set_stats:
+    per_host: false
+    aggregate: false
+    data:
+      prepared_failover:
+        plan: "{{ recovery_plan }}"
+        plan_hash: "{{ recovery_plan_hash }}"
+        request_id: "{{ failover_request_id }}"
+        source_mode: "{{ source_isolation_mode }}"

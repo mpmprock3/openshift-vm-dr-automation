@@ -1,0 +1,58 @@
+---
+- name: Resolve job settings from its working DC or DR counterpart
+  ansible.builtin.set_fact:
+    desired_job_settings:
+      name: "{{ failover_job.name }}"
+      description: Managed by vmdr native failover setup
+      job_type: run
+      inventory: "{{ base_templates[failover_job.base].inventory }}"
+      project: "{{ base_templates[failover_job.base].project }}"
+      execution_environment: "{{ base_templates[failover_job.base].execution_environment }}"
+      playbook: "{{ failover_job.playbook }}"
+      allow_simultaneous: false
+      timeout: 7200
+    desired_job_credentials: "{{ (base_templates[failover_job.base].credential_ids + (base_templates['Refresh VM Choices'].credential_ids | difference(base_templates['Configure DC Protection'].credential_ids))) | unique | list if failover_job.name == 'Refresh Recovery Choices' else base_templates[failover_job.base].credential_ids }}"
+- name: Find job template by name
+  ansible.builtin.include_tasks: survey_api.yml
+  vars:
+    survey_path: "/api/controller/v2/job_templates/?{{ {'name':failover_job.name} | urlencode }}"
+- name: Require unique managed job templates with matching settings
+  ansible.builtin.assert:
+    that:
+      - survey_response.json.count | int <= 1
+      - survey_response.json.count == 0 or (survey_response.json.results[0] | combine(desired_job_settings)) == survey_response.json.results[0]
+    fail_msg: Existing job template differs from this definition. Review it; setup will not overwrite it.
+- name: Create missing job template
+  ansible.builtin.include_tasks: survey_api.yml
+  vars:
+    survey_path: /api/controller/v2/job_templates/
+    survey_method: POST
+    survey_body: "{{ desired_job_settings }}"
+  when: survey_response.json.count | default(0) == 0
+- name: Record job template ID
+  ansible.builtin.set_fact:
+    configured_job_id: "{{ survey_response.json.id | default((survey_response.json.results | default([{}]) | first).id) }}"
+- name: Read existing credential associations
+  ansible.builtin.include_tasks: survey_api.yml
+  vars:
+    survey_path: "/api/controller/v2/job_templates/{{ configured_job_id }}/credentials/?page_size=200"
+- name: Refuse unexpected credentials
+  ansible.builtin.assert:
+    that:
+      - survey_response.json.next | default(none) == none
+      - survey_response.json.results | map(attribute='id') | difference(desired_job_credentials) | length == 0
+- name: Determine missing credential associations
+  ansible.builtin.set_fact:
+    missing_credential_ids: "{{ desired_job_credentials | difference(survey_response.json.results | map(attribute='id') | list) }}"
+- name: Attach credentials by ID without reading secret values
+  ansible.builtin.include_tasks: survey_api.yml
+  vars:
+    survey_path: "/api/controller/v2/job_templates/{{ configured_job_id }}/credentials/"
+    survey_method: POST
+    survey_body: {id: "{{ credential_id }}"}
+  loop: "{{ missing_credential_ids }}"
+  loop_control:
+    loop_var: credential_id
+- name: Store job ID for workflow construction
+  ansible.builtin.set_fact:
+    failover_template_ids: "{{ failover_template_ids | combine({failover_job.name: configured_job_id}) }}"

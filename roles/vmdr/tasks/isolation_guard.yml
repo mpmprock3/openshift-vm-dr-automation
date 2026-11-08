@@ -1,0 +1,16 @@
+---
+- name: Require matching and recent source isolation evidence
+  ansible.builtin.assert:
+    that:
+      - prepared_failover is defined
+      - source_isolation_result is defined
+      - prepared_failover.request_id == failover_request_id
+      - prepared_failover.plan_hash == recovery_plan_hash
+      - source_isolation_result.request_id == failover_request_id
+      - source_isolation_result.plan_hash == recovery_plan_hash
+      - source_isolation_result.mode == source_isolation_mode
+      - isolation_age | int >= 0
+      - isolation_age | int <= 300
+    fail_msg: Source isolation evidence is missing, mismatched or older than five minutes. Rerun the workflow; do not launch promotion alone.
+  vars:
+    isolation_age: "{{ ((now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') | to_datetime('%Y-%m-%dT%H:%M:%SZ')) - (source_isolation_result.confirmed_at | default('1970-01-01T00:00:00Z') | to_datetime('%Y-%m-%dT%H:%M:%SZ'))).total_seconds() | int }}"

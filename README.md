@@ -110,3 +110,59 @@ The native tests cover dependency templates, exact PV selection, duplicate/unmap
 Development also exercised validation, DC/DR creation, unchanged reruns and existing-plan rejection with simulated Kubernetes responses on ansible-core 2.19. Survey GET/POST/read-back was exercised against a local HTTPS API fixture. These checks do not substitute for a live Trident Protect replication and recovery test.
 
 References: [Kubernetes resource module](https://docs.ansible.com/projects/ansible/latest/collections/kubernetes/core/k8s_module.html), [AAP 2.6 execution environments](https://docs.redhat.com/en/documentation/red_hat_ansible_automation_platform/2.6/html/creating_and_using_execution_environments/index).
+
+## Existing replica failover
+
+The `Fail Over to DR` workflow promotes one enrolled protection group using its existing replicated data. It does not request a new source snapshot or a final sync. It can stop source VMs without synchronizing their final writes; this is not a zero-data-loss planned switchover.
+
+The four success-linked jobs are:
+
+1. **Prepare DR Failover** (`prepare_failover.yml`, DR credential): load membership from the DR catalog, verify the enrolled AMR identity/mapping, inspect the replicated recovery point, require bound disks and a Ready schedulable KVM node, and reject pre-existing destination VMs before initial promotion.
+2. **Isolate Source VMs** (`isolate_source.yml`, DC credential): either pause the enrolled source snapshot schedule, set source VM `runStrategy: Halted` and wait for the VMIs to disappear; or record explicitly confirmed external fencing without connecting to DC.
+3. **Promote DR Replica** (`promote_dr_replica.yml`, DR credential): recheck the plan and recent isolation artifact, atomically mark the request and set AMR `desiredState: Promoted`, then wait for Trident Protect.
+4. **Verify DR Recovery** (`verify_dr_recovery.yml`, DR credential): inspect restored VM disk references and PVC binding, request start when needed, wait for Running/Ready VMIs, report interfaces and guest-agent status, and optionally check an HTTP endpoint.
+
+Promotion can itself start restored workloads. Source isolation must therefore finish before promotion, not merely before the final verification job. An external-fencing reference is operator attestation, not independently verified fencing. Prevent GitOps, another administrator or another automation from restarting the source during recovery. This POC does not automate a hardware/network fencing provider.
+
+### Install the AAP workflow
+
+1. Synchronize the VMDR automation project.
+2. Rerun **Enable DR Protection** with the exact same existing plan and selections. On success it stores a ConfigMap named `<AMR-name>-plan` in the DR relationship namespace. This includes VM membership, disk names, mapping, API endpoints and object UIDs, without credentials or VM definitions. It does not fail over the VMs. Existing catalogs are checked rather than overwritten.
+3. Create one job template named **Configure Failover Workflow** using this project, the existing localhost inventory/EE, playbook `configure_failover_workflow.yml`, and the same **AAP Survey Updater** credential used by Refresh VM Choices. The token needs permissions to create templates/workflows and use the referenced project, inventory, EE and credentials. Do not add a cluster credential to this setup job.
+4. Launch that setup job. It creates the four recovery templates, **Refresh Recovery Choices**, the workflow survey, and success-only connections. It copies inventory/project/EE settings and credential associations from the existing templates **Configure DC Protection**, **Establish DR Replication**, and **Refresh VM Choices**. Those names must match exactly. Setup does not launch a failover. Partial setup can be rerun; unmanaged or differing objects are not overwritten.
+5. Run **Refresh Recovery Choices**, then open a new **Fail Over to DR** launch form.
+
+The setup uses AAP controller APIs through native `ansible.builtin.uri` tasks. It does not read credential secret values. It uses the API credential's permissions; an edit-only token that can update a survey might not have permission to create these objects.
+
+### First POC launch
+
+For the currently enrolled example, select:
+
+| Question | Example answer |
+|---|---|
+| Protected VM group | `vmdr-v4/demo-vm-plan-v4-66354786-mirror` |
+| Failover request ID | `demo-failover-001` |
+| Source isolation mode | `Stop source VMs` |
+| Accept existing replica without final sync | `Yes` |
+| Maximum snapshot completion age | `15` minutes |
+| External fencing confirmation/reference | Leave at No/empty for Stop source VMs mode |
+| Application health URL | Optional URL reachable from the AAP execution pod |
+
+For a source-unavailable recovery, use **Source externally fenced** only after the relevant source isolation is actually completed, select Yes for fencing confirmation, and supply a reference. This branch makes no DC API calls. A source API timeout by itself is not fencing.
+
+Select the entire enrolled application/AMR, not an arbitrary VM from a larger protection group. Multiple VMs in that group are recovered together. Keep concurrent launches disabled. Reuse the same request ID to retry a partially completed recovery; a different request cannot take over a relationship marked by an earlier promotion. The workflow never resets an AMR to Established and never automatically restarts source VMs or unpauses their schedule after a failure.
+
+The reported snapshot completion age uses Trident Protect 26.02 `status.lastTransferredSnapshot.completionTimestamp`. It is **not** a measured application RPO or a precise data-capture timestamp. The snapshot available at promotion can advance after preflight. Changing the accepted age does not change replication frequency. The asynchronous enrollment guard rejects intervals below five minutes; FlexGroup and other configurations need their own supported minima confirmed with NetApp.
+
+The node check is a basic prerequisite, not a full scheduler/capacity reservation or a network equivalence test. No MAC-retention annotation from newer Trident releases is applied to 26.02. Reported guest interfaces do not prove IP preservation or external connectivity. A successful HTTP check from AAP also does not prove database transaction integrity or access from all customer networks.
+
+Before a production commitment, verify capacity, network attachments, guest addressing, application dependencies, fencing, data freshness and failback under realistic workloads. Failback is a separate workflow and is not implemented here; ordinary resync can discard DR-side changes.
+
+### Failover verification coverage
+
+```bash
+ANSIBLE_ROLES_PATH=roles ansible-playbook -i localhost, tests/interval.yml
+ANSIBLE_ROLES_PATH=roles ansible-playbook -i localhost, tests/failover_guards.yml
+```
+
+Local tests exercise stale replica rejection, missing external fencing, expired isolation evidence, another request's promotion marker, and the source-independent fencing branch. Simulated Kubernetes tests exercise enrollment/catalog creation, source halt, promotion, VM verification and promotion retry. A local HTTPS controller fixture tests workflow/template creation and API associations. These tests do not execute a real VM failover or validate NetApp controller behavior on a live cluster.

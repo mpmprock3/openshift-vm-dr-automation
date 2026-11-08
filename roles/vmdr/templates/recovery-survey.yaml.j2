@@ -1,0 +1,6 @@
+{% set questions = [] %}
+{% for question in failover_original_survey.spec %}
+{% set updated = question | combine({'choices': recovery_choices | unique | sort | join('\n'), 'default': ''}) if question.variable == 'recovery_target' else question %}
+{% set ignored = questions.append(updated) %}
+{% endfor %}
+{{ failover_original_survey | combine({'spec': questions}) | to_json }}

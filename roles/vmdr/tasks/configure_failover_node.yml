@@ -1,0 +1,27 @@
+---
+- name: Find existing workflow node
+  ansible.builtin.include_tasks: survey_api.yml
+  vars:
+    survey_path: "/api/controller/v2/workflow_job_templates/{{ failover_workflow_id }}/workflow_nodes/?{{ {'identifier':failover_node.identifier} | urlencode }}"
+- name: Validate existing node identity
+  ansible.builtin.assert:
+    that:
+      - survey_response.json.count | int <= 1
+      - survey_response.json.count == 0 or survey_response.json.results[0].unified_job_template == failover_template_ids[failover_node.job] | int
+- name: Create missing workflow node
+  ansible.builtin.include_tasks: survey_api.yml
+  vars:
+    survey_path: "/api/controller/v2/workflow_job_templates/{{ failover_workflow_id }}/workflow_nodes/"
+    survey_method: POST
+    survey_body:
+      identifier: "{{ failover_node.identifier }}"
+      unified_job_template: "{{ failover_template_ids[failover_node.job] }}"
+  when: survey_response.json.count | default(0) == 0
+- name: Record node ID
+  ansible.builtin.set_fact:
+    failover_node_ids: "{{ failover_node_ids | combine({failover_node.identifier: survey_response.json.id | default((survey_response.json.results | default([{}]) | first).id)}) }}"
+- name: Ensure no failure or always branches could bypass a prerequisite
+  ansible.builtin.include_tasks: assert_no_edges.yml
+  loop: [failure_nodes, always_nodes]
+  loop_control:
+    loop_var: edge_kind

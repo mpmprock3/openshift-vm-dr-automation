@@ -1,0 +1,12 @@
+---
+- name: Refresh protected VM group choices from DR catalogs
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - ansible.builtin.import_role:
+        name: vmdr
+        tasks_from: credentials
+    - ansible.builtin.import_role:
+        name: vmdr
+        tasks_from: refresh_recovery

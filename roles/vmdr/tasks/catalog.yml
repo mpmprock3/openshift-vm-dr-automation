@@ -1,0 +1,46 @@
+---
+- name: Build durable recovery plan without credentials or VM definitions
+  ansible.builtin.set_fact:
+    catalog_plan:
+      schema_version: 1
+      source_api: "{{ dc_protection_result.plan.source_api }}"
+      destination_api: "{{ cluster_api }}"
+      protection_plan: "{{ dc_protection_result.plan.protection_plan }}"
+      application_namespace: "{{ dc_protection_result.application_namespace }}"
+      application_name: "{{ dc_protection_result.application_name }}"
+      application_uid: "{{ dc_protection_result.application_uid }}"
+      schedule: "{{ dc_protection_result.schedule }}"
+      namespace_mapping: "{{ dc_protection_result.plan.namespace_mapping }}"
+      selected_vms: "{{ dc_protection_result.plan.selected_vms }}"
+      mirror_namespace: "{{ mirror_namespace }}"
+      mirror_name: "{{ dc_protection_result.mirror_name }}"
+      mirror_uid: "{{ ensured_resource.metadata.uid }}"
+- name: Inspect recovery plan catalog
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ConfigMap
+    namespace: "{{ mirror_namespace }}"
+    name: "{{ dc_protection_result.mirror_name }}-plan"
+  register: catalog_query
+- name: Refuse to replace a different recovery plan
+  ansible.builtin.assert:
+    that:
+      - catalog_query.resources[0].metadata.labels['app.kubernetes.io/managed-by'] | default('') == protect_owner
+      - catalog_query.resources[0].data['plan.json'] | from_json == catalog_plan
+    fail_msg: Existing recovery catalog differs. Review the plan; it will not be replaced automatically.
+  when: catalog_query.resources | length > 0
+- name: Store recovery plan on DR for source-independent recovery
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        namespace: "{{ mirror_namespace }}"
+        name: "{{ dc_protection_result.mirror_name }}-plan"
+        labels:
+          app.kubernetes.io/managed-by: "{{ protect_owner }}"
+          app.kubernetes.io/component: recovery-plan
+      data:
+        plan.json: "{{ catalog_plan | to_json(sort_keys=true) }}"
+  when: catalog_query.resources | length == 0

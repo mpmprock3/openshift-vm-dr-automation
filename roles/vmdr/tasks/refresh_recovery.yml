@@ -1,0 +1,78 @@
+---
+- name: Discover enrolled recovery catalogs on DR
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ConfigMap
+    label_selectors:
+      - app.kubernetes.io/component=recovery-plan
+      - "app.kubernetes.io/managed-by={{ protect_owner }}"
+  register: recovery_catalogs
+- name: Build protected-group choices
+  ansible.builtin.set_fact:
+    recovery_choices: []
+- name: Add enrolled protection relationships
+  ansible.builtin.set_fact:
+    recovery_choices: "{{ recovery_choices + [item.metadata.namespace ~ '/' ~ (item.data['plan.json'] | from_json).mirror_name] }}"
+  loop: "{{ recovery_catalogs.resources }}"
+  loop_control:
+    label: "{{ item.metadata.namespace }}/{{ item.metadata.name }}"
+- name: Require registered protection plans
+  ansible.builtin.assert:
+    that: recovery_choices | length > 0
+    fail_msg: No recovery catalogs found. Run Enable DR Protection with the existing plan and selections first.
+- name: Find failover workflow
+  ansible.builtin.include_tasks: survey_api.yml
+  vars:
+    survey_path: "/api/controller/v2/workflow_job_templates/?{{ {'name': 'Fail Over to DR'} | urlencode }}"
+- name: Require the failover workflow
+  ansible.builtin.assert:
+    that: survey_response.json.count == 1
+- name: Record failover survey path
+  ansible.builtin.set_fact:
+    failover_survey_path: "/api/controller/v2/workflow_job_templates/{{ survey_response.json.results[0].id }}/survey_spec/"
+- name: Read failover survey
+  ansible.builtin.include_tasks: survey_api.yml
+  vars:
+    survey_path: "{{ failover_survey_path }}"
+- name: Keep original survey for comparison
+  ansible.builtin.set_fact:
+    failover_original_survey: "{{ survey_response.json }}"
+  no_log: true
+- name: Require a single protected-group question
+  ansible.builtin.assert:
+    that:
+      - failover_original_survey.spec | selectattr('variable', 'equalto', 'recovery_target') | list | length == 1
+      - (failover_original_survey.spec | selectattr('variable', 'equalto', 'recovery_target') | first).type == 'multiplechoice'
+- name: Render refreshed recovery choices
+  ansible.builtin.set_fact:
+    failover_updated_survey: "{{ lookup('template', 'recovery-survey.yaml.j2') | from_yaml }}"
+  no_log: true
+- name: Recheck for concurrent survey edits
+  ansible.builtin.include_tasks: survey_api.yml
+  vars:
+    survey_path: "{{ failover_survey_path }}"
+- name: Refuse to overwrite concurrent edits
+  ansible.builtin.assert:
+    that: survey_response.json == failover_original_survey
+- name: Save recovery choices
+  ansible.builtin.include_tasks: survey_api.yml
+  vars:
+    survey_path: "{{ failover_survey_path }}"
+    survey_method: POST
+    survey_body: "{{ failover_updated_survey }}"
+  when: failover_updated_survey != failover_original_survey
+- name: Read back recovery choices
+  ansible.builtin.include_tasks: survey_api.yml
+  vars:
+    survey_path: "{{ failover_survey_path }}"
+- name: Verify saved recovery choices
+  ansible.builtin.assert:
+    that: actual_choices | sort == recovery_choices | unique | sort
+  vars:
+    saved_choices: "{{ (survey_response.json.spec | selectattr('variable', 'equalto', 'recovery_target') | first).choices }}"
+    actual_choices: "{{ saved_choices.splitlines() if saved_choices is string else saved_choices }}"
+- name: Show refreshed protection groups
+  ansible.builtin.debug:
+    msg:
+      protected_groups: "{{ recovery_choices | unique | sort }}"
+      next_step: Open a new Fail Over to DR launch form. Each choice represents the entire enrolled VM group.

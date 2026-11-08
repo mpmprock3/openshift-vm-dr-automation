@@ -1,0 +1,14 @@
+---
+- name: Promote the existing DR replica
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Validate the DR credential
+      ansible.builtin.import_role:
+        name: vmdr
+        tasks_from: credentials
+    - name: Promote the existing DR replica
+      ansible.builtin.import_role:
+        name: vmdr
+        tasks_from: promote_failover

@@ -1,0 +1,13 @@
+---
+- name: Stop source VMs or record external fencing for existing-replica failover
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Refuse check mode
+      ansible.builtin.assert:
+        that: not ansible_check_mode
+    - name: Handle source isolation
+      ansible.builtin.import_role:
+        name: vmdr
+        tasks_from: isolate_source

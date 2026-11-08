@@ -1,0 +1,4 @@
+{% for source, destination in recovery_plan.namespace_mapping | dictsort %}
+- source: {{ source | to_json }}
+  destination: {{ destination | to_json }}
+{% endfor %}

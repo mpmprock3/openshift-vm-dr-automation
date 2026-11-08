@@ -1,0 +1,28 @@
+---
+- name: Require an established replica or a retry of this same promotion request
+  ansible.builtin.assert:
+    that:
+      - recovery_amr.metadata.annotations['vmdr.aap/request-id'] | default(failover_request_id) == failover_request_id
+      - >-
+        (recovery_amr.spec.desiredState == 'Established' and recovery_amr.status.state == 'Established') or
+        (recovery_amr.spec.desiredState == 'Promoted' and recovery_amr.status.state in ['Established', 'Promoting', 'Promoted'] and
+         recovery_amr.metadata.annotations['vmdr.aap/request-id'] | default('') == failover_request_id)
+    fail_msg: Relationship is not ready, is owned by another request, or was promoted outside this workflow. Do not reset it to Established.
+- name: Require a completed replicated snapshot
+  ansible.builtin.assert:
+    that:
+      - recovery_amr.status.lastTransferredSnapshot.name | default('') | length > 0
+      - recovery_amr.status.lastTransferredSnapshot.completionTimestamp | default('') | length > 0
+      - recovery_amr.spec.promotedSnapshot | default('') | length == 0
+    fail_msg: No completed snapshot is recorded, or a specific promotedSnapshot is configured. This workflow uses the latest replica only.
+- name: Calculate snapshot completion age for preflight reporting
+  ansible.builtin.set_fact:
+    recovery_snapshot_age_seconds: "{{ ((now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') | to_datetime('%Y-%m-%dT%H:%M:%SZ')) - (recovery_amr.status.lastTransferredSnapshot.completionTimestamp | regex_replace('\\.[0-9]+Z$', 'Z') | to_datetime('%Y-%m-%dT%H:%M:%SZ'))).total_seconds() | int }}"
+- name: Check allowed replica age before a new promotion
+  ansible.builtin.assert:
+    that:
+      - max_snapshot_completion_age_minutes | default(15) | int > 0
+      - recovery_snapshot_age_seconds | int >= 0
+      - recovery_snapshot_age_seconds | int <= (max_snapshot_completion_age_minutes | default(15) | int * 60)
+    fail_msg: "Latest replicated snapshot completed {{ recovery_snapshot_age_seconds }} seconds ago. Review the recovery point; adjust max_snapshot_completion_age_minutes explicitly if accepting older data. This completion-age check is not a measured RPO guarantee."
+  when: recovery_amr.spec.desiredState == 'Established'

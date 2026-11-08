@@ -1,0 +1,20 @@
+---
+- name: Inspect success branches
+  ansible.builtin.include_tasks: survey_api.yml
+  vars:
+    survey_path: "/api/controller/v2/workflow_job_template_nodes/{{ failover_node_ids[failover_edge.source] }}/success_nodes/"
+- name: Refuse unexpected success branches
+  ansible.builtin.assert:
+    that:
+      - survey_response.json.count | int <= 1
+      - survey_response.json.count == 0 or (failover_edge.destination != '' and survey_response.json.results[0].id == failover_node_ids[failover_edge.destination] | int)
+- name: Add missing success branch
+  ansible.builtin.include_tasks: survey_api.yml
+  vars:
+    survey_path: "/api/controller/v2/workflow_job_template_nodes/{{ failover_node_ids[failover_edge.source] }}/success_nodes/"
+    survey_method: POST
+    survey_body:
+      id: "{{ failover_node_ids[failover_edge.destination] }}"
+  when:
+    - failover_edge.destination != ''
+    - survey_response.json.count == 0

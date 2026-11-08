@@ -1,0 +1,23 @@
+---
+- name: Require replicated disk PVCs to be Bound
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: PersistentVolumeClaim
+    namespace: "{{ recovery_vm.destination_namespace }}"
+    name: "{{ item.pvc }}"
+  loop: "{{ recovery_vm.disks }}"
+  register: recovery_pvc
+  failed_when: recovery_pvc.resources | length != 1 or recovery_pvc.resources[0].status.phase | default('') != 'Bound'
+- name: Inspect target VM name
+  kubernetes.core.k8s_info:
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    namespace: "{{ recovery_vm.destination_namespace }}"
+    name: "{{ recovery_vm.vm.split('/')[1] }}"
+  register: recovery_target_vm
+  no_log: true
+- name: Reject a pre-existing VM before promotion
+  ansible.builtin.assert:
+    that: recovery_target_vm.resources | length == 0
+    fail_msg: A destination VM already exists before promotion. Inspect it rather than overwriting it.
+  when: recovery_amr.spec.desiredState == 'Established'

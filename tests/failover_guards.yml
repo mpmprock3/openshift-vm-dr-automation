@@ -1,0 +1,89 @@
+---
+- name: Verify failover gates without cluster access
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    failover_request_id: test-request
+    source_isolation_mode: Source externally fenced
+    accept_replica_data_loss: 'Yes'
+    recovery_plan_hash: fixture-hash
+    prepared_failover:
+      request_id: test-request
+      plan_hash: fixture-hash
+      source_mode: Source externally fenced
+    healthy_amr:
+      metadata: {annotations: {}}
+      spec: {desiredState: Established}
+      status:
+        state: Established
+        lastTransferredSnapshot:
+          name: fixture-snapshot
+          completionTimestamp: "{{ now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') }}"
+  tasks:
+    - name: Accept an established recent replica
+      ansible.builtin.include_role:
+        name: vmdr
+        tasks_from: recovery_guard
+      vars:
+        recovery_amr: "{{ healthy_amr }}"
+    - name: Reject another request's promoted relationship
+      block:
+        - ansible.builtin.include_role:
+            name: vmdr
+            tasks_from: recovery_guard
+          vars:
+            recovery_amr: "{{ healthy_amr | combine({'metadata': {'annotations': {'vmdr.aap/request-id':'different-request'}}, 'spec': {'desiredState':'Promoted'}, 'status': {'state':'Promoted'}}, recursive=true) }}"
+      rescue:
+        - ansible.builtin.assert:
+            that: "'owned by another request' in ansible_failed_result.msg"
+        - ansible.builtin.set_fact: {different_request_rejected: true}
+    - name: Reject stale replicated data by default
+      block:
+        - ansible.builtin.include_role:
+            name: vmdr
+            tasks_from: recovery_guard
+          vars:
+            recovery_amr: "{{ healthy_amr | combine({'status': {'lastTransferredSnapshot': {'completionTimestamp':'2000-01-01T00:00:00Z'}}}, recursive=true) }}"
+      rescue:
+        - ansible.builtin.assert:
+            that: "'Latest replicated snapshot completed' in ansible_failed_result.msg"
+        - ansible.builtin.set_fact: {stale_replica_rejected: true}
+    - name: Reject missing external fencing confirmation
+      block:
+        - ansible.builtin.include_role:
+            name: vmdr
+            tasks_from: isolate_source
+      rescue:
+        - ansible.builtin.assert:
+            that: "'Externally fenced mode requires' in ansible_failed_result.msg"
+        - ansible.builtin.set_fact: {missing_fence_rejected: true}
+    - name: Accept documented external fencing without a DC credential or connection
+      ansible.builtin.include_role:
+        name: vmdr
+        tasks_from: isolate_source
+      vars:
+        source_fencing_confirmed: 'Yes'
+        fencing_reference: TEST-FENCE-001 isolated network and source compute
+    - name: Reject stale source isolation evidence
+      block:
+        - ansible.builtin.include_role:
+            name: vmdr
+            tasks_from: isolation_guard
+          vars:
+            source_isolation_result:
+              request_id: test-request
+              plan_hash: fixture-hash
+              mode: Source externally fenced
+              confirmed_at: '2000-01-01T00:00:00Z'
+      rescue:
+        - ansible.builtin.assert:
+            that: "'Source isolation evidence is missing' in ansible_failed_result.msg"
+        - ansible.builtin.set_fact: {stale_isolation_rejected: true}
+    - name: Require all rejection cases to execute
+      ansible.builtin.assert:
+        that:
+          - different_request_rejected | default(false)
+          - stale_replica_rejected | default(false)
+          - missing_fence_rejected | default(false)
+          - stale_isolation_rejected | default(false)

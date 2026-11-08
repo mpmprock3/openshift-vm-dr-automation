@@ -1,0 +1,65 @@
+---
+- name: Require completed promotion from this workflow request
+  ansible.builtin.assert:
+    that:
+      - promoted_failover is defined
+      - promoted_failover.request_id == failover_request_id
+      - promoted_failover.plan.destination_api == cluster_api
+- name: Verify the relationship remains promoted
+  kubernetes.core.k8s_info:
+    api_version: "{{ protect_api_version }}"
+    kind: AppMirrorRelationship
+    namespace: "{{ promoted_failover.plan.mirror_namespace }}"
+    name: "{{ promoted_failover.plan.mirror_name }}"
+  register: promoted_query
+- name: Require the same promoted relationship and request
+  ansible.builtin.assert:
+    that:
+      - promoted_query.resources | length == 1
+      - promoted_query.resources[0].metadata.uid == promoted_failover.plan.mirror_uid
+      - promoted_query.resources[0].spec.desiredState == 'Promoted'
+      - promoted_query.resources[0].status.state == 'Promoted'
+      - promoted_query.resources[0].metadata.annotations['vmdr.aap/request-id'] | default('') == failover_request_id
+- name: Initialize recovered VM report
+  ansible.builtin.set_fact:
+    recovered_vm_report: []
+- name: Verify restored VMs and start stopped recovered VMs
+  ansible.builtin.include_tasks: verify_recovered_vm.yml
+  loop: "{{ promoted_failover.plan.selected_vms }}"
+  loop_control:
+    loop_var: recovered_vm
+    label: "{{ recovered_vm.vm }}"
+- name: Check optional application health endpoint from the AAP execution pod
+  ansible.builtin.uri:
+    url: "{{ application_health_url }}"
+    method: GET
+    follow_redirects: none
+    use_netrc: false
+    validate_certs: true
+    status_code: 200
+    return_content: false
+    timeout: 15
+  register: application_probe
+  until: application_probe.status | default(0) == 200
+  retries: 20
+  delay: 10
+  when: application_health_url | default('') | length > 0
+  no_log: true
+- name: Report recovery result and remaining verification scope
+  ansible.builtin.debug:
+    msg:
+      recovered_vms: "{{ recovered_vm_report }}"
+      application_http_check: "{{ 'Passed' if application_health_url | default('') | length > 0 else 'Not configured; application recovery is not verified' }}"
+      limitations: VM readiness does not prove preserved guest IP, external client reachability, database consistency or a two-minute RPO. Source remains isolated; there is no automatic failback.
+- name: Save recovery result in AAP artifacts
+  ansible.builtin.set_stats:
+    per_host: false
+    aggregate: false
+    data:
+      failover_result:
+        request_id: "{{ failover_request_id }}"
+        relationship: "{{ promoted_failover.plan.mirror_namespace }}/{{ promoted_failover.plan.mirror_name }}"
+        state: Promoted
+        recovered_vms: "{{ recovered_vm_report }}"
+        application_http_verified: "{{ application_health_url | default('') | length > 0 }}"
+        note: No final source snapshot was taken. Do not reset this relationship to Established to perform failback.

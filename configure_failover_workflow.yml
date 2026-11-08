@@ -1,0 +1,10 @@
+---
+- name: Create AAP existing-replica failover templates and workflow without launching it
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Configure AAP workflow
+      ansible.builtin.import_role:
+        name: vmdr
+        tasks_from: configure_failover_ui
