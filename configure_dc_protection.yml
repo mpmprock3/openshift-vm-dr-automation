@@ -4,41 +4,11 @@
   connection: local
   gather_facts: false
   tasks:
-    - name: Require the validation workflow artifact
-      ansible.builtin.assert:
-        that:
-          - resolved_protection_plan is defined
-          - resolved_protection_plan is mapping
-        fail_msg: Run this job after Validate Protection Selection in the workflow.
-
-    - name: Create Application, initial Snapshot and Schedule on DC
-      ansible.builtin.command:
-        argv:
-          - "{{ ansible_playbook_python }}"
-          - "{{ playbook_dir }}/scripts/protection_setup.py"
-          - dc
-        stdin: >-
-          {{ {'plan': resolved_protection_plan,
-              'vault_namespace': protect_vault_namespace | default('trident-protect'),
-              'source_vault': protect_source_vault | default('lab-vault'),
-              'timeout': protect_wait_seconds | default(1800)} | to_json }}
-      register: setup
-      changed_when: false
-      failed_when: false
-      no_log: true
-
-    - name: Show DC protection result
-      ansible.builtin.debug:
-        msg: "{{ setup.stdout | default('No result returned.') }}"
-      changed_when: setup.rc == 0 and (setup.stdout | from_json).changed | default(false)
-
-    - name: Require successful DC protection setup
-      ansible.builtin.assert:
-        that: setup.rc == 0
-        fail_msg: See the DC protection result. Partial resources are retained; DR setup must not run on failure.
-
-    - name: Pass source Application UID and snapshot details to DR
-      ansible.builtin.set_stats:
-        data:
-          dc_protection_result: "{{ (setup.stdout | from_json).output }}"
-        per_host: false
+    - name: Validate the attached API credential
+      ansible.builtin.import_role:
+        name: vmdr
+        tasks_from: credentials
+    - name: Configure source VM protection on DC
+      ansible.builtin.import_role:
+        name: vmdr
+        tasks_from: dc

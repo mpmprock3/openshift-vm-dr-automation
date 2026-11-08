@@ -1,0 +1,43 @@
+---
+- name: Inspect existing {{ desired_resource.kind }} {{ desired_resource.metadata.name }}
+  kubernetes.core.k8s_info:
+    api_version: "{{ desired_resource.apiVersion }}"
+    kind: "{{ desired_resource.kind }}"
+    namespace: "{{ desired_resource.metadata.namespace }}"
+    name: "{{ desired_resource.metadata.name }}"
+  register: existing_resource
+  no_log: true
+- name: Normalize unordered Application selectors for rerun comparison
+  ansible.builtin.set_fact:
+    comparable_existing: "{{ lookup('template', 'comparable-spec.yaml.j2') | from_yaml }}"
+  vars:
+    comparison_kind: "{{ desired_resource.kind }}"
+    comparison_spec: "{{ existing_resource.resources[0].spec }}"
+  when: existing_resource.resources | length > 0
+  no_log: true
+- name: Normalize requested selectors
+  ansible.builtin.set_fact:
+    comparable_desired: "{{ lookup('template', 'comparable-spec.yaml.j2') | from_yaml }}"
+  vars:
+    comparison_kind: "{{ desired_resource.kind }}"
+    comparison_spec: "{{ desired_resource.spec }}"
+  no_log: true
+- name: Reject adoption or changes to existing protection resources
+  ansible.builtin.assert:
+    that:
+      - existing_resource.resources[0].metadata.labels['app.kubernetes.io/managed-by'] | default('') == protect_owner
+      - >-
+        (comparable_existing | combine(comparable_desired, recursive=true)) == comparable_existing
+    fail_msg: Existing protection resource is unmanaged or differs from this plan. Review it or use a new plan; it will not be overwritten.
+  when: existing_resource.resources | length > 0
+- name: Create {{ desired_resource.kind }} {{ desired_resource.metadata.name }}
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ desired_resource }}"
+  when: existing_resource.resources | length == 0
+  register: created_resource
+  no_log: true
+- name: Record protection resource
+  ansible.builtin.set_fact:
+    ensured_resource: "{{ existing_resource.resources[0] if existing_resource.resources | length > 0 else created_resource.result }}"
+  no_log: true

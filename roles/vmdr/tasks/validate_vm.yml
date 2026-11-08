@@ -1,0 +1,23 @@
+---
+- name: Resolve persistent disk claims
+  ansible.builtin.set_fact:
+    current_vm: "{{ vm_index[selected_vm_name] }}"
+    vm_disks: []
+    disk_claims: >-
+      {{ ((vm_index[selected_vm_name].spec.template.spec.volumes | default([]) |
+           selectattr('persistentVolumeClaim', 'defined') | map(attribute='persistentVolumeClaim.claimName') | list) +
+          (vm_index[selected_vm_name].spec.template.spec.volumes | default([]) |
+           selectattr('dataVolume', 'defined') | map(attribute='dataVolume.name') | list)) | unique | sort }}
+  no_log: true
+- name: Require persistent disks
+  ansible.builtin.assert:
+    that: disk_claims | length > 0
+    fail_msg: "No persistent PVC disks found for {{ selected_vm_name }}."
+- name: Validate disk storage
+  ansible.builtin.include_tasks: validate_disk.yml
+  loop: "{{ disk_claims }}"
+  loop_control:
+    loop_var: disk_claim
+- name: Add safe VM summary
+  ansible.builtin.set_fact:
+    selected_summaries: "{{ selected_summaries + [{'vm': selected_vm_name, 'uid': current_vm.metadata.uid, 'reported_state': current_vm.status.printableStatus | default('Unknown'), 'destination_namespace': namespace_mapping[current_vm.metadata.namespace], 'disks': vm_disks}] }}"

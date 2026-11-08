@@ -1,0 +1,19 @@
+---
+- name: Read AppVault {{ vault_name }}
+  kubernetes.core.k8s_info:
+    api_version: "{{ protect_api_version }}"
+    kind: AppVault
+    namespace: "{{ protect_vault_namespace }}"
+    name: "{{ vault_name }}"
+  register: vault_query
+  no_log: true
+- name: Require an available AppVault
+  ansible.builtin.assert:
+    that:
+      - vault_query.resources | length == 1
+      - vault_query.resources[0].status.state | default('') == 'Available'
+    fail_msg: AppVault is missing or not Available.
+- name: Calculate source bucket fingerprint without publishing its configuration
+  ansible.builtin.set_fact:
+    vault_fingerprint: "{{ {'providerType': vault_query.resources[0].spec.providerType | default(none), 'providerConfig': vault_query.resources[0].spec.providerConfig | default(none)} | to_json(sort_keys=true) | hash('sha256') }}"
+  no_log: true

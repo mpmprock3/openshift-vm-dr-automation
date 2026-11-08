@@ -1,0 +1,21 @@
+---
+- name: Reset target identities for this transfer
+  ansible.builtin.set_fact:
+    transfer_targets: []
+- name: Require a destination namespace for every transferred volume
+  ansible.builtin.assert:
+    that:
+      - item.destinationPVC.namespace | default('') | length > 0
+      - item.destinationPVC.name | default('') | length > 0
+      - item.sourcePVC.namespace in dc_protection_result.plan.namespace_mapping
+      - item.destinationPVC.namespace == dc_protection_result.plan.namespace_mapping[item.sourcePVC.namespace]
+    fail_msg: Transfer includes an unmapped volume. Inspect the source Application/archive. Stopping AAP does not stop the Trident controller.
+  loop: "{{ transfer.status.destinationVolumes | default([]) }}"
+- name: Collect destination volume identities
+  ansible.builtin.set_fact:
+    transfer_targets: "{{ transfer_targets + [item.destinationPVC.namespace ~ '/' ~ item.destinationPVC.name] }}"
+  loop: "{{ transfer.status.destinationVolumes | default([]) }}"
+- name: Reject duplicate destination volumes
+  ansible.builtin.assert:
+    that: transfer_targets | length == transfer_targets | unique | length
+    fail_msg: Duplicate destination PVCs in the transfer archive. Inspect source resource selection; no failover was attempted.

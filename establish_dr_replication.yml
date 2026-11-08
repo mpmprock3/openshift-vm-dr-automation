@@ -4,43 +4,11 @@
   connection: local
   gather_facts: false
   tasks:
-    - name: Require the completed DC protection workflow artifact
-      ansible.builtin.assert:
-        that:
-          - dc_protection_result is defined
-          - dc_protection_result is mapping
-        fail_msg: Run this job after Configure DC Protection succeeds in the workflow.
-
-    - name: Validate DR and establish the replication relationship
-      ansible.builtin.command:
-        argv:
-          - "{{ ansible_playbook_python }}"
-          - "{{ playbook_dir }}/scripts/protection_setup.py"
-          - dr
-        stdin: >-
-          {{ {'dc_result': dc_protection_result,
-              'vault_namespace': protect_vault_namespace | default('trident-protect'),
-              'source_vault': protect_source_vault | default('lab-vault'),
-              'destination_vault': protect_destination_vault | default('lab-vault'),
-              'storage_class': protect_destination_storage_class | default('storage-class-iscsi'),
-              'timeout': protect_wait_seconds | default(1800)} | to_json }}
-      register: setup
-      changed_when: false
-      failed_when: false
-      no_log: true
-
-    - name: Show DR replication result
-      ansible.builtin.debug:
-        msg: "{{ setup.stdout | default('No result returned.') }}"
-      changed_when: setup.rc == 0 and (setup.stdout | from_json).changed | default(false)
-
-    - name: Require successful replication establishment
-      ansible.builtin.assert:
-        that: setup.rc == 0
-        fail_msg: See the DR replication result. Inspect the reported resources before retrying.
-
-    - name: Record replication result
-      ansible.builtin.set_stats:
-        data:
-          dr_replication_result: "{{ (setup.stdout | from_json).output }}"
-        per_host: false
+    - name: Validate the attached API credential
+      ansible.builtin.import_role:
+        name: vmdr
+        tasks_from: credentials
+    - name: Establish VM replication on DR
+      ansible.builtin.import_role:
+        name: vmdr
+        tasks_from: dr

@@ -1,0 +1,19 @@
+---
+- name: Read destination namespace {{ target_namespace }}
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Namespace
+    name: "{{ target_namespace }}"
+  register: namespace_query
+- name: Reject a terminating namespace
+  ansible.builtin.assert:
+    that: namespace_query.resources | length == 0 or namespace_query.resources[0].status.phase | default('') != 'Terminating'
+- name: Create missing destination namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ target_namespace }}"
+  when: namespace_query.resources | length == 0

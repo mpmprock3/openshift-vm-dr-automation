@@ -1,0 +1,134 @@
+---
+- name: Test native resource templates and transfer guards without cluster access
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    current_vm:
+      metadata: {namespace: default, name: demo}
+      spec:
+        instancetype: {name: small, revisionName: small-revision}
+        template:
+          spec:
+            volumes:
+              - {name: disk, dataVolume: {name: demo}}
+              - {name: init, cloudInitNoCloud: {userData: private-inline-data, secretRef: {name: cloud-secret}}}
+            networks:
+              - {name: secondary, multus: {networkName: default/vm-network}}
+    application_name: demo-plan
+    application_namespace: default
+    resolved_protection_plan:
+      namespace_mapping: {default: vmdr}
+    dc_protection_result:
+      plan:
+        namespace_mapping: {default: vmdr}
+  tasks:
+    - name: Load role defaults without connecting to a cluster
+      ansible.builtin.include_vars: ../roles/vmdr/defaults/main.yml
+    - name: Initialize matcher collections
+      ansible.builtin.set_fact:
+        resource_matchers: []
+        cluster_kinds: []
+    - name: Render reference template
+      ansible.builtin.set_fact:
+        test_refs: "{{ lookup('template', '../roles/vmdr/templates/vm-references.yaml.j2') | from_yaml }}"
+    - name: Verify dependencies without exposing inline cloud-init
+      ansible.builtin.assert:
+        that:
+          - "'private-inline-data' not in (test_refs | to_json)"
+          - test_refs | selectattr('name', 'equalto', 'cloud-secret') | list | length == 1
+          - test_refs | selectattr('name', 'equalto', 'vm-network') | list | length == 1
+          - test_refs | selectattr('kind', 'equalto', 'DataVolume') | list | length == 1
+          - test_refs | selectattr('kind', 'equalto', 'VirtualMachineClusterInstancetype') | list | length == 1
+          - test_refs | selectattr('kind', 'equalto', 'ControllerRevision') | list | length == 1
+    - name: Build exact dependency matchers
+      ansible.builtin.include_role:
+        name: vmdr
+        tasks_from: add_reference
+      loop: "{{ test_refs + [{'version':'v1', 'kind':'PersistentVolume', 'name':'pv-demo', 'namespace':''}] }}"
+      loop_control:
+        loop_var: dependency_ref
+    - name: Verify PV selection is exact and never broad
+      ansible.builtin.assert:
+        that:
+          - resource_matchers | selectattr('kind', 'equalto', 'PersistentVolume') | list | length == 1
+          - cluster_kinds | selectattr('groupVersionKind.kind', 'equalto', 'PersistentVolume') | list | length == 0
+    - name: Render Application template
+      ansible.builtin.set_fact:
+        test_application: "{{ lookup('template', '../roles/vmdr/templates/application.yaml.j2') | from_yaml }}"
+    - name: Verify single selected namespace
+      ansible.builtin.assert:
+        that:
+          - test_application.spec.includedNamespaces | map(attribute='namespace') | list == ['default']
+          - test_application.spec.resourceFilter.resourceSelectionCriteria == 'Include'
+    - name: Accept a correctly mapped volume
+      ansible.builtin.include_role:
+        name: vmdr
+        tasks_from: validate_transfer
+      vars:
+        transfer:
+          status:
+            destinationVolumes:
+              - sourcePVC: {namespace: default, name: demo}
+                destinationPVC: {namespace: vmdr, name: demo}
+    - name: Exercise duplicate rejection
+      block:
+        - name: Check a duplicate target
+          ansible.builtin.include_role:
+            name: vmdr
+            tasks_from: validate_transfer
+          vars:
+            transfer:
+              status:
+                destinationVolumes:
+                  - sourcePVC: {namespace: default, name: demo}
+                    destinationPVC: {namespace: vmdr, name: demo}
+                  - sourcePVC: {namespace: default, name: demo}
+                    destinationPVC: {namespace: vmdr, name: demo}
+      rescue:
+        - name: Record expected duplicate rejection
+          ansible.builtin.set_fact:
+            duplicate_rejected: true
+    - name: Exercise unmapped volume rejection
+      block:
+        - name: Check an unmapped target
+          ansible.builtin.include_role:
+            name: vmdr
+            tasks_from: validate_transfer
+          vars:
+            transfer:
+              status:
+                destinationVolumes:
+                  - sourcePVC: {namespace: test, name: other}
+                    destinationPVC: {namespace: '', name: other}
+      rescue:
+        - name: Record expected unmapped rejection
+          ansible.builtin.set_fact:
+            unmapped_rejected: true
+    - name: Require both rejection paths to have run
+      ansible.builtin.assert:
+        that:
+          - duplicate_rejected | default(false)
+          - unmapped_rejected | default(false)
+    - name: Define survey preservation fixture
+      ansible.builtin.set_fact:
+        original_survey:
+          name: Protection
+          description: Keep this description
+          spec:
+            - {variable: source_vms, type: multiselect, choices: old, default: old}
+            - {variable: source_namespaces, type: multiselect, choices: old, default: old}
+            - {variable: protection_plan, type: text, default: demo-plan}
+        discovered_vm_names: [test/second, default/demo, default/demo]
+        discovered_namespaces: [default, test]
+    - name: Render refreshed survey
+      ansible.builtin.set_fact:
+        test_survey: "{{ lookup('template', '../roles/vmdr/templates/survey.yaml.j2') | from_yaml }}"
+    - name: Verify choice sorting, defaults and preservation
+      ansible.builtin.assert:
+        that:
+          - test_survey.description == original_survey.description
+          - test_survey.spec[0].choices == 'default/demo\ntest/second'
+          - test_survey.spec[0].default == ''
+          - test_survey.spec[1].default == ''
+          - test_survey.spec[2] == original_survey.spec[2]

@@ -1,0 +1,48 @@
+---
+- name: Check current transfer progress
+  when: not mirror_established | bool
+  block:
+    - name: Read application replication state
+      kubernetes.core.k8s_info:
+        api_version: "{{ protect_api_version }}"
+        kind: AppMirrorRelationship
+        namespace: "{{ mirror_namespace }}"
+        name: "{{ dc_protection_result.mirror_name }}"
+      register: mirror_query
+    - name: Require the replication relationship to remain present
+      ansible.builtin.assert:
+        that: mirror_query.resources | length == 1
+    - name: Record current replication status
+      ansible.builtin.set_fact:
+        mirror_status: "{{ mirror_query.resources[0].status | default({}) }}"
+    - name: Read active AppMirrorUpdates
+      kubernetes.core.k8s_info:
+        api_version: "{{ protect_api_version }}"
+        kind: AppMirrorUpdate
+        namespace: "{{ mirror_namespace }}"
+      register: mirror_updates
+    - name: Validate each running transfer
+      ansible.builtin.include_tasks: validate_transfer.yml
+      loop: "{{ mirror_updates.resources | selectattr('spec.appMirrorRelationshipRef', 'equalto', dc_protection_result.mirror_name) | list }}"
+      loop_control:
+        loop_var: transfer
+        label: "{{ transfer.metadata.name }}"
+      when: transfer.status.state | default('') == 'Running'
+    - name: Reject terminal failures or unexpected promotion
+      ansible.builtin.assert:
+        that:
+          - mirror_status.state | default('') not in ['Failed', 'Error', 'Invalid', 'Promoted', 'Promoting', 'Reestablishing']
+          - mirror_query.resources[0].spec.desiredState == 'Established'
+        fail_msg: "Replication cannot proceed: {{ mirror_status }}"
+    - name: Record readiness
+      ansible.builtin.set_fact:
+        mirror_established: "{{ mirror_status.state | default('') == 'Established' }}"
+    - name: Show replication progress
+      ansible.builtin.debug:
+        msg:
+          state: "{{ mirror_status.state | default('Pending') }}"
+          error: "{{ mirror_status.error | default('') }}"
+    - name: Wait before checking replication again
+      ansible.builtin.pause:
+        seconds: "{{ protect_poll_seconds }}"
+      when: not mirror_established | bool

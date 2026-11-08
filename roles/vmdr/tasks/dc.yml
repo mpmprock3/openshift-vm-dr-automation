@@ -1,0 +1,78 @@
+---
+- name: Require validation from this DC cluster
+  ansible.builtin.assert:
+    that:
+      - resolved_protection_plan is defined
+      - resolved_protection_plan is mapping
+      - resolved_protection_plan.source_api == cluster_api
+    fail_msg: Run this job after successful validation with the same DC credential.
+- name: Resolve protection resource names
+  ansible.builtin.set_fact:
+    application_name: "{{ resolved_protection_plan.protection_plan[:40] }}-{{ (resolved_protection_plan.protection_plan | hash('sha256'))[:8] }}"
+    application_namespace: "{{ resolved_protection_plan.namespace_mapping.keys() | sort | first }}"
+    recurrence_rule: "DTSTART:20260101T000000Z\nRRULE:FREQ=MINUTELY;INTERVAL={{ resolved_protection_plan.replication_interval_minutes }}"
+- name: Validate the source AppVault
+  ansible.builtin.include_tasks: vault.yml
+  vars:
+    vault_name: "{{ protect_source_vault }}"
+- name: Build precise VM resource selection
+  ansible.builtin.include_tasks: dependencies.yml
+- name: Create or verify the source Application
+  ansible.builtin.include_tasks: ensure.yml
+  vars:
+    desired_resource: "{{ lookup('template', 'application.yaml.j2') | from_yaml }}"
+- name: Retain the source Application UID
+  ansible.builtin.set_fact:
+    application_uid: "{{ ensured_resource.metadata.uid }}"
+- name: Check that the Application controller begins reconciliation
+  kubernetes.core.k8s_info:
+    api_version: "{{ protect_api_version }}"
+    kind: Application
+    namespace: "{{ application_namespace }}"
+    name: "{{ application_name }}"
+  register: application_status
+  until: application_status.resources | length > 0 and application_status.resources[0].status | default({}) | length > 0
+  retries: 12
+  delay: 10
+- name: Wait for Application readiness
+  ansible.builtin.include_tasks: wait.yml
+  vars:
+    wait_kind: Application
+    wait_name: "{{ application_name }}"
+    wait_namespace: "{{ application_namespace }}"
+    wait_state: Ready
+- name: Create or verify the initial Snapshot
+  ansible.builtin.include_tasks: ensure.yml
+  vars:
+    desired_resource: "{{ lookup('template', 'snapshot.yaml.j2') | from_yaml }}"
+- name: Wait for the initial Snapshot
+  ansible.builtin.include_tasks: wait.yml
+  vars:
+    wait_kind: Snapshot
+    wait_name: "{{ application_name }}-initial"
+    wait_namespace: "{{ application_namespace }}"
+    wait_state: Completed
+- name: Create or verify the snapshot Schedule
+  ansible.builtin.include_tasks: ensure.yml
+  vars:
+    desired_resource: "{{ lookup('template', 'schedule.yaml.j2') | from_yaml }}"
+- name: Record completed DC protection details
+  ansible.builtin.set_fact:
+    dc_protection_output:
+      plan: "{{ resolved_protection_plan }}"
+      application_name: "{{ application_name }}"
+      application_namespace: "{{ application_namespace }}"
+      application_uid: "{{ application_uid }}"
+      source_vault: "{{ protect_source_vault }}"
+      vault_fingerprint: "{{ vault_fingerprint }}"
+      initial_snapshot: "{{ application_name }}-initial"
+      schedule: "{{ application_name }}-schedule"
+      recurrence_rule: "{{ recurrence_rule }}"
+      mirror_name: "{{ application_name }}-mirror"
+      result: DC Application Ready and initial Snapshot Completed; snapshot schedule configured.
+- name: Pass DC protection details to the DR workflow job
+  ansible.builtin.set_stats:
+    per_host: false
+    aggregate: false
+    data:
+      dc_protection_result: "{{ dc_protection_output }}"

@@ -1,0 +1,88 @@
+---
+- name: Require completed DC protection and a different DR endpoint
+  ansible.builtin.assert:
+    that:
+      - dc_protection_result is defined
+      - dc_protection_result is mapping
+      - dc_protection_result.plan.source_api != cluster_api
+    fail_msg: Run after Configure DC Protection succeeds and attach the DR credential.
+- name: Resolve DR relationship namespace
+  ansible.builtin.set_fact:
+    mirror_namespace: "{{ dc_protection_result.plan.namespace_mapping[dc_protection_result.application_namespace] }}"
+- name: Validate DR access to the source archive bucket
+  ansible.builtin.include_tasks: vault.yml
+  vars:
+    vault_name: "{{ protect_source_vault }}"
+- name: Require matching source AppVault configurations
+  ansible.builtin.assert:
+    that: vault_fingerprint == dc_protection_result.vault_fingerprint
+    fail_msg: DR source AppVault must reference the same source archive bucket as DC.
+- name: Validate destination AppVault
+  ansible.builtin.include_tasks: vault.yml
+  vars:
+    vault_name: "{{ protect_destination_vault }}"
+- name: Read destination storage class
+  kubernetes.core.k8s_info:
+    api_version: storage.k8s.io/v1
+    kind: StorageClass
+    name: "{{ protect_destination_storage_class }}"
+  register: destination_sc
+- name: Require Trident destination storage
+  ansible.builtin.assert:
+    that:
+      - destination_sc.resources | length == 1
+      - destination_sc.resources[0].provisioner == 'csi.trident.netapp.io'
+- name: Inspect existing replication relationship
+  kubernetes.core.k8s_info:
+    api_version: "{{ protect_api_version }}"
+    kind: AppMirrorRelationship
+    namespace: "{{ mirror_namespace }}"
+    name: "{{ dc_protection_result.mirror_name }}"
+  register: existing_mirror
+- name: Refuse to reset a relationship in recovery
+  ansible.builtin.assert:
+    that:
+      - existing_mirror.resources[0].spec.desiredState == 'Established'
+      - existing_mirror.resources[0].status.state | default('') not in ['Promoted', 'Promoting', 'Reestablishing']
+    fail_msg: Protection setup will not reset a promoted or recovering relationship.
+  when: existing_mirror.resources | length > 0
+- name: Prepare destination namespaces
+  ansible.builtin.include_tasks: namespace.yml
+  loop: "{{ dc_protection_result.plan.namespace_mapping.values() | unique | sort }}"
+  loop_control:
+    loop_var: target_namespace
+- name: Check for existing destination workloads before first enrollment
+  ansible.builtin.include_tasks: destination_collision.yml
+  loop: "{{ dc_protection_result.plan.selected_vms }}"
+  loop_control:
+    loop_var: target_vm
+    label: "{{ target_vm.vm }}"
+  when: existing_mirror.resources | length == 0
+- name: Create or verify AppMirrorRelationship
+  ansible.builtin.include_tasks: ensure.yml
+  vars:
+    desired_resource: "{{ lookup('template', 'appmirrorrelationship.yaml.j2') | from_yaml }}"
+- name: Initialize replication monitoring
+  ansible.builtin.set_fact:
+    mirror_established: false
+- name: Monitor replication and validate transfer mappings
+  ansible.builtin.include_tasks: poll_mirror.yml
+  loop: "{{ range(0, ((protect_wait_seconds | int) / (protect_poll_seconds | int)) | round(0, 'ceil') | int) | list }}"
+  loop_control:
+    loop_var: poll_number
+- name: Require Established replication
+  ansible.builtin.assert:
+    that: mirror_established | bool
+    fail_msg: "Replication timed out. Last status: {{ mirror_status }}. No resources were deleted or promoted."
+- name: Record replication outcome
+  ansible.builtin.set_stats:
+    per_host: false
+    aggregate: false
+    data:
+      dr_replication_result:
+        relationship: "{{ mirror_namespace }}/{{ dc_protection_result.mirror_name }}"
+        state: Established
+        namespace_mapping: "{{ dc_protection_result.plan.namespace_mapping }}"
+        selected_vms: "{{ dc_protection_result.plan.selected_vms | map(attribute='vm') | list }}"
+        result: Replication relationship Established. No failover was performed.
+        note: Established does not prove guest recovery or an achieved RPO. Verify recovery separately.

@@ -1,0 +1,31 @@
+---
+- name: Initialize exact resource selection
+  ansible.builtin.set_fact:
+    resource_matchers: []
+    cluster_kinds: []
+- name: Discover Trident snapshot classes
+  kubernetes.core.k8s_info:
+    api_version: snapshot.storage.k8s.io/v1
+    kind: VolumeSnapshotClass
+  register: snapshot_classes
+- name: Require a Trident snapshot class
+  ansible.builtin.assert:
+    that: snapshot_classes.resources | selectattr('driver', 'equalto', 'csi.trident.netapp.io') | list | length > 0
+- name: Include snapshot class definitions
+  ansible.builtin.include_tasks: add_reference.yml
+  loop: "{{ snapshot_classes.resources | selectattr('driver', 'equalto', 'csi.trident.netapp.io') | map(attribute='metadata.name') | list }}"
+  loop_control:
+    loop_var: snapshot_class_name
+  vars:
+    dependency_ref:
+      group: snapshot.storage.k8s.io
+      version: v1
+      kind: VolumeSnapshotClass
+      name: "{{ snapshot_class_name }}"
+      namespace: ''
+- name: Resolve dependencies of each selected VM
+  ansible.builtin.include_tasks: vm_dependencies.yml
+  loop: "{{ resolved_protection_plan.selected_vms }}"
+  loop_control:
+    loop_var: protected_vm
+    label: "{{ protected_vm.vm }}"

@@ -1,0 +1,21 @@
+---
+- name: Wait for {{ wait_kind }} {{ wait_name }} to report {{ wait_state }}
+  kubernetes.core.k8s_info:
+    api_version: "{{ protect_api_version }}"
+    kind: "{{ wait_kind }}"
+    namespace: "{{ wait_namespace }}"
+    name: "{{ wait_name }}"
+  register: readiness
+  until: >-
+    readiness.resources | length == 1 and
+    ((readiness.resources[0].status.state | default('') == wait_state) or
+     (wait_kind == 'Application' and
+      readiness.resources[0].status.conditions | default([]) |
+      selectattr('type', 'equalto', 'Ready') | selectattr('status', 'equalto', 'True') | list | length > 0) or
+     readiness.resources[0].status.state | default('') in ['Failed', 'Error', 'Invalid'])
+  retries: "{{ ((protect_wait_seconds | int) / (protect_poll_seconds | int)) | round(0, 'ceil') | int }}"
+  delay: "{{ protect_poll_seconds }}"
+- name: Reject a failed resource state
+  ansible.builtin.assert:
+    that: readiness.resources[0].status.state | default('') not in ['Failed', 'Error', 'Invalid']
+    fail_msg: "Resource reached a failed state: {{ readiness.resources[0].status | default({}) }}"

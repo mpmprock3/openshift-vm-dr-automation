@@ -1,0 +1,10 @@
+{% set normalized = comparison_spec | combine({}) %}
+{% if comparison_kind == 'Application' %}
+{% if normalized.includedClusterScopedResources is defined %}
+{% set normalized = normalized | combine({'includedClusterScopedResources': normalized.includedClusterScopedResources | map('to_json', sort_keys=true) | sort | list}) %}
+{% endif %}
+{% if normalized.resourceFilter.resourceMatchers is defined %}
+{% set normalized = normalized | combine({'resourceFilter': normalized.resourceFilter | combine({'resourceMatchers': normalized.resourceFilter.resourceMatchers | map('to_json', sort_keys=true) | sort | list})}) %}
+{% endif %}
+{% endif %}
+{{ normalized | to_json }}

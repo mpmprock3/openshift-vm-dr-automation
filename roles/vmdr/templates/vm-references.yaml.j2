@@ -1,0 +1,41 @@
+{# Only reference names are rendered. VM cloud-init and Secret values never enter this template. #}
+{% set ns = current_vm.metadata.namespace %}
+{% set name = current_vm.metadata.name %}
+- {group: kubevirt.io, version: v1, kind: VirtualMachine, namespace: {{ ns | to_json }}, name: {{ name | to_json }}}
+- {group: kubevirt.io, version: v1, kind: VirtualMachineInstance, namespace: {{ ns | to_json }}, name: {{ name | to_json }}}
+{% for volume in current_vm.spec.template.spec.volumes | default([]) %}
+{% if volume.dataVolume is defined %}
+- {group: cdi.kubevirt.io, version: v1beta1, kind: DataVolume, namespace: {{ ns | to_json }}, name: {{ volume.dataVolume.name | to_json }}}
+{% endif %}
+{% for cloud_key in ['cloudInitNoCloud', 'cloudInitConfigDrive'] %}
+{% for ref_key in ['secretRef', 'userDataSecretRef', 'networkDataSecretRef'] %}
+{% set ref = volume.get(cloud_key, {}).get(ref_key, {}).get('name', '') %}
+{% if ref %}
+- {version: v1, kind: Secret, namespace: {{ ns | to_json }}, name: {{ ref | to_json }}}
+{% endif %}
+{% endfor %}
+{% endfor %}
+{% for field, key, kind in [('secret','secretName','Secret'), ('configMap','name','ConfigMap'), ('serviceAccount','serviceAccountName','ServiceAccount'), ('containerDisk','imagePullSecret','Secret')] %}
+{% set ref = volume.get(field, {}).get(key, '') %}
+{% if ref %}
+- {version: v1, kind: {{ kind }}, namespace: {{ ns | to_json }}, name: {{ ref | to_json }}}
+{% endif %}
+{% endfor %}
+{% endfor %}
+{% for network in current_vm.spec.template.spec.networks | default([]) %}
+{% set ref = network.get('multus', {}).get('networkName', '') %}
+{% if ref %}
+- {group: k8s.cni.cncf.io, version: v1, kind: NetworkAttachmentDefinition, namespace: {{ ns | to_json }}, name: {{ ref.split('/')[-1] | to_json }}}
+{% endif %}
+{% endfor %}
+{% set kinds = {'virtualmachineinstancetype':'VirtualMachineInstancetype','virtualmachineclusterinstancetype':'VirtualMachineClusterInstancetype','virtualmachinepreference':'VirtualMachinePreference','virtualmachineclusterpreference':'VirtualMachineClusterPreference'} %}
+{% for field, default_kind in [('instancetype','VirtualMachineClusterInstancetype'), ('preference','VirtualMachineClusterPreference')] %}
+{% set ref = current_vm.spec.get(field, {}) %}
+{% if ref.get('revisionName') %}
+- {group: apps, version: v1, kind: ControllerRevision, namespace: {{ ns | to_json }}, name: {{ ref.revisionName | to_json }}}
+{% endif %}
+{% if ref.get('name') %}
+{% set kind = kinds[ref.get('kind', default_kind) | lower] %}
+- {group: instancetype.kubevirt.io, version: v1beta1, kind: {{ kind }}, namespace: {{ ('' if 'Cluster' in kind else ns) | to_json }}, name: {{ ref.name | to_json }}}
+{% endif %}
+{% endfor %}

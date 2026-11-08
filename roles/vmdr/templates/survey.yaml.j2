@@ -1,0 +1,12 @@
+{% set questions = [] %}
+{% for question in original_survey.spec %}
+{% if question.variable == 'source_vms' %}
+{% set updated = question | combine({'choices': discovered_vm_names | unique | sort | join('\n'), 'default': ''}) %}
+{% elif question.variable == 'source_namespaces' %}
+{% set updated = question | combine({'choices': discovered_namespaces | unique | sort | join('\n'), 'default': ''}) %}
+{% else %}
+{% set updated = question %}
+{% endif %}
+{% set ignored = questions.append(updated) %}
+{% endfor %}
+{{ original_survey | combine({'spec': questions}) | to_json }}

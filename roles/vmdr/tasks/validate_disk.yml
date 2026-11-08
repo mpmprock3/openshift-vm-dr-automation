@@ -1,0 +1,29 @@
+---
+- name: Read PVC {{ disk_claim }}
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: PersistentVolumeClaim
+    namespace: "{{ current_vm.metadata.namespace }}"
+    name: "{{ disk_claim }}"
+  register: pvc_query
+- name: Require a bound PVC
+  ansible.builtin.assert:
+    that:
+      - pvc_query.resources | length == 1
+      - pvc_query.resources[0].status.phase | default('') == 'Bound'
+    fail_msg: "Missing or unbound PVC {{ current_vm.metadata.namespace }}/{{ disk_claim }}."
+- name: Read disk storage class
+  kubernetes.core.k8s_info:
+    api_version: storage.k8s.io/v1
+    kind: StorageClass
+    name: "{{ pvc_query.resources[0].spec.storageClassName }}"
+  register: sc_query
+- name: Require NetApp Trident storage
+  ansible.builtin.assert:
+    that:
+      - sc_query.resources | length == 1
+      - sc_query.resources[0].provisioner == 'csi.trident.netapp.io'
+    fail_msg: Selected disk is not provisioned by Trident.
+- name: Record disk summary
+  ansible.builtin.set_fact:
+    vm_disks: "{{ vm_disks + [{'pvc': disk_claim, 'storage_class': pvc_query.resources[0].spec.storageClassName}] }}"

@@ -1,0 +1,15 @@
+apiVersion: protect.trident.netapp.io/v1
+kind: Schedule
+metadata:
+  name: {{ application_name }}-schedule
+  namespace: {{ application_namespace }}
+  labels:
+    app.kubernetes.io/managed-by: {{ protect_owner }}
+spec:
+  applicationRef: {{ application_name }}
+  appVaultRef: {{ protect_source_vault }}
+  backupRetention: '0'
+  snapshotRetention: '3'
+  enabled: true
+  granularity: Custom
+  recurrenceRule: {{ recurrence_rule | to_json }}

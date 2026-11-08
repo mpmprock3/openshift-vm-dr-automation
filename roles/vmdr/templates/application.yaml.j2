@@ -1,0 +1,18 @@
+apiVersion: protect.trident.netapp.io/v1
+kind: Application
+metadata:
+  name: {{ application_name }}
+  namespace: {{ application_namespace }}
+  labels:
+    app.kubernetes.io/managed-by: {{ protect_owner }}
+spec:
+  includedNamespaces:
+{% for namespace in resolved_protection_plan.namespace_mapping.keys() | sort %}
+    - namespace: {{ namespace }}
+      labelSelector: {}
+{% endfor %}
+  # PVs are discovered through selected PVCs; never explicitly select all PVs.
+  includedClusterScopedResources: {{ cluster_kinds | to_json }}
+  resourceFilter:
+    resourceSelectionCriteria: Include
+    resourceMatchers: {{ resource_matchers | sort(attribute='kind') | to_json }}

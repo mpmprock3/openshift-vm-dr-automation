@@ -1,0 +1,20 @@
+apiVersion: protect.trident.netapp.io/v1
+kind: AppMirrorRelationship
+metadata:
+  name: {{ dc_protection_result.mirror_name }}
+  namespace: {{ mirror_namespace }}
+  labels:
+    app.kubernetes.io/managed-by: {{ protect_owner }}
+spec:
+  desiredState: Established
+  destinationAppVaultRef: {{ protect_destination_vault }}
+  sourceAppVaultRef: {{ protect_source_vault }}
+  sourceApplicationName: {{ dc_protection_result.application_name }}
+  sourceApplicationUID: {{ dc_protection_result.application_uid }}
+  storageClassName: {{ protect_destination_storage_class }}
+  namespaceMapping:
+{% for source, destination in dc_protection_result.plan.namespace_mapping | dictsort %}
+    - source: {{ source }}
+      destination: {{ destination }}
+{% endfor %}
+  recurrenceRule: {{ dc_protection_result.recurrence_rule | to_json }}

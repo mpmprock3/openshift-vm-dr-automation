@@ -4,36 +4,11 @@
   connection: local
   gather_facts: false
   tasks:
-    - name: Resolve selections and validate storage without changing the cluster
-      ansible.builtin.command:
-        argv:
-          - "{{ ansible_playbook_python }}"
-          - "{{ playbook_dir }}/scripts/validate_protection.py"
-        stdin: >-
-          {{ {'protection_scope': protection_scope | default([]),
-              'source_vms': source_vms | default([]),
-              'source_namespaces': source_namespaces | default([]),
-              'protection_plan': protection_plan | default(''),
-              'namespace_mapping_mode': namespace_mapping_mode | default(''),
-              'destination_namespace': destination_namespace | default(''),
-              'replication_interval_minutes': replication_interval_minutes | default(5)} | to_json }}
-      register: validation
-      changed_when: false
-      failed_when: false
-      no_log: true
-
-    - name: Show safe validation result
-      ansible.builtin.debug:
-        msg: "{{ validation.stdout | default('Validator did not produce output.') }}"
-
-    - name: Stop if validation failed
-      ansible.builtin.assert:
-        that: validation.rc == 0
-        fail_msg: See the validation result above. No cluster resources were changed.
-
-    - name: Pass the resolved plan to later workflow jobs
-      ansible.builtin.set_stats:
-        data:
-          resolved_protection_plan: "{{ validation.stdout | from_json }}"
-        per_host: false
-
+    - name: Validate the attached API credential
+      ansible.builtin.import_role:
+        name: vmdr
+        tasks_from: credentials
+    - name: Validate the protection survey against DC
+      ansible.builtin.import_role:
+        name: vmdr
+        tasks_from: validate

@@ -1,0 +1,9 @@
+---
+protect_vault_namespace: trident-protect
+protect_source_vault: lab-vault
+protect_destination_vault: lab-vault
+protect_destination_storage_class: storage-class-iscsi
+protect_wait_seconds: 1800
+protect_poll_seconds: 10
+protect_owner: aap-dr-poc
+protect_api_version: protect.trident.netapp.io/v1

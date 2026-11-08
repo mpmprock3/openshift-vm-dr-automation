@@ -1,0 +1,89 @@
+---
+- name: Read selected VM {{ protected_vm.vm }} again before protection
+  kubernetes.core.k8s_info:
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    namespace: "{{ protected_vm.vm.split('/')[0] }}"
+    name: "{{ protected_vm.vm.split('/')[1] }}"
+  register: selected_vm_query
+  no_log: true
+- name: Require the same VM incarnation as validation
+  ansible.builtin.assert:
+    that:
+      - selected_vm_query.resources | length == 1
+      - selected_vm_query.resources[0].metadata.uid == protected_vm.uid
+    fail_msg: VM disappeared or was recreated; rerun validation.
+- name: Keep VM definition private while resolving dependencies
+  ansible.builtin.set_fact:
+    current_vm: "{{ selected_vm_query.resources[0] }}"
+    vm_disks: []
+  no_log: true
+- name: Check current disk selection and unsupported dependencies
+  ansible.builtin.assert:
+    that:
+      - current_claims | unique | sort == protected_vm.disks | map(attribute='pvc') | unique | sort
+      - not current_vm.spec.template.spec.accessCredentials | default([])
+      - not current_vm.spec.template.spec.domain.firmware.kernelBoot | default({})
+    fail_msg: VM disks changed, or accessCredentials/kernelBoot require additional dependency handling.
+  vars:
+    current_claims: >-
+      {{ (current_vm.spec.template.spec.volumes | default([]) | selectattr('persistentVolumeClaim', 'defined') | map(attribute='persistentVolumeClaim.claimName') | list) +
+         (current_vm.spec.template.spec.volumes | default([]) | selectattr('dataVolume', 'defined') | map(attribute='dataVolume.name') | list) }}
+- name: Reject unsupported volume types
+  ansible.builtin.assert:
+    that: item.keys() | difference(['name', 'dataVolume', 'persistentVolumeClaim', 'cloudInitNoCloud', 'cloudInitConfigDrive', 'secret', 'configMap', 'serviceAccount', 'containerDisk']) | length == 0
+    fail_msg: Unsupported VM volume dependency; extend the role before protecting this VM.
+  loop: "{{ current_vm.spec.template.spec.volumes | default([]) }}"
+  no_log: true
+- name: Reject cross-namespace network references without a DR network mapping
+  ansible.builtin.assert:
+    that: "'/' not in network_ref or network_ref.split('/')[0] == current_vm.metadata.namespace"
+    fail_msg: Cross-namespace network attachments require an explicit DR mapping.
+  loop: "{{ current_vm.spec.template.spec.networks | default([]) }}"
+  vars:
+    network_ref: "{{ item.multus.networkName | default('') }}"
+  no_log: true
+- name: Render named VM dependencies
+  ansible.builtin.set_fact:
+    vm_references: "{{ lookup('template', 'vm-references.yaml.j2') | from_yaml }}"
+  no_log: true
+- name: Include named VM dependencies
+  ansible.builtin.include_tasks: add_reference.yml
+  loop: "{{ vm_references }}"
+  loop_control:
+    loop_var: dependency_ref
+    label: "{{ dependency_ref.kind }}/{{ dependency_ref.name }}"
+- name: Verify referenced network attachments exist
+  kubernetes.core.k8s_info:
+    api_version: k8s.cni.cncf.io/v1
+    kind: NetworkAttachmentDefinition
+    namespace: "{{ current_vm.metadata.namespace }}"
+    name: "{{ item.name }}"
+  loop: "{{ vm_references | selectattr('kind', 'equalto', 'NetworkAttachmentDefinition') | list }}"
+  register: network_query
+  failed_when: network_query.resources | length != 1
+- name: Revalidate and include VM disk dependencies
+  ansible.builtin.include_tasks: disk_dependencies.yml
+  loop: "{{ protected_vm.disks | map(attribute='pvc') | list }}"
+  loop_control:
+    loop_var: disk_claim
+- name: Discover VM launcher pods
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: "{{ current_vm.metadata.namespace }}"
+  register: pod_query
+  no_log: true
+- name: Include launcher pods owned by this VMI
+  ansible.builtin.include_tasks: add_reference.yml
+  loop: "{{ pod_query.resources | map(attribute='metadata') | list }}"
+  loop_control:
+    loop_var: pod_metadata
+    label: "{{ pod_metadata.name }}"
+  when: pod_metadata.ownerReferences | default([]) | selectattr('kind', 'equalto', 'VirtualMachineInstance') | selectattr('name', 'equalto', current_vm.metadata.name) | list | length > 0
+  vars:
+    dependency_ref:
+      version: v1
+      kind: Pod
+      namespace: "{{ current_vm.metadata.namespace }}"
+      name: "{{ pod_metadata.name }}"

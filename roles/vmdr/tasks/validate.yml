@@ -1,0 +1,86 @@
+---
+- name: Check survey input types and scope
+  ansible.builtin.assert:
+    that:
+      - protection_scope | default([]) is sequence and protection_scope | default([]) is not string and protection_scope | default([]) is not mapping
+      - protection_scope | default([]) | length > 0
+      - protection_scope | difference(['Selected VMs', 'All VMs in selected namespaces']) | length == 0
+      - source_vms | default([], true) is sequence and source_vms | default([], true) is not string and source_vms | default([], true) is not mapping
+      - source_namespaces | default([], true) is sequence and source_namespaces | default([], true) is not string and source_namespaces | default([], true) is not mapping
+      - "('Selected VMs' in protection_scope) == (source_vms | default([], true) | length > 0)"
+      - "('All VMs in selected namespaces' in protection_scope) == (source_namespaces | default([], true) | length > 0)"
+      - protection_plan | default('') is match('^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$')
+      - replication_interval_minutes | default(5) | string is match('^[0-9]+$')
+      - replication_interval_minutes | default(5) | int >= 1
+      - replication_interval_minutes | default(5) | int <= 1440
+      - namespace_mapping_mode | default('') in ['Keep source namespace names', 'Use one custom destination namespace']
+    fail_msg: Check scope, selected lists, plan name, replication interval and single-select namespace mapping mode.
+- name: Discover source VMs
+  kubernetes.core.k8s_info:
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+  register: vm_inventory
+  no_log: true
+- name: Index source VMs and reset selection
+  ansible.builtin.set_fact:
+    vm_index: {}
+    selected_vm_names: "{{ source_vms | default([], true) }}"
+    selected_summaries: []
+    namespace_mapping: {}
+- name: Index each discovered VM
+  ansible.builtin.set_fact:
+    vm_index: "{{ vm_index | combine({item.metadata.namespace ~ '/' ~ item.metadata.name: item}) }}"
+  loop: "{{ vm_inventory.resources }}"
+  no_log: true
+- name: Resolve selected namespaces
+  ansible.builtin.include_tasks: select_namespace.yml
+  loop: "{{ source_namespaces | default([], true) }}"
+  loop_control:
+    loop_var: selected_namespace
+- name: Deduplicate VM selections
+  ansible.builtin.set_fact:
+    selected_vm_names: "{{ selected_vm_names | unique | sort }}"
+- name: Require existing selected VMs
+  ansible.builtin.assert:
+    that:
+      - selected_vm_names | length > 0
+      - selected_vm_names | difference(vm_index.keys() | list) | length == 0
+    fail_msg: One or more selected VMs no longer exist; refresh choices and relaunch.
+- name: Resolve source namespaces
+  ansible.builtin.set_fact:
+    selected_namespaces: "{{ selected_vm_names | map('regex_replace', '/.*$', '') | unique | sort }}"
+- name: Validate custom namespace mapping
+  ansible.builtin.assert:
+    that:
+      - selected_namespaces | length == 1
+      - destination_namespace | default('') is match('^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$')
+    fail_msg: A custom destination requires one source namespace and a valid destination namespace name.
+  when: namespace_mapping_mode == 'Use one custom destination namespace'
+- name: Build namespace mapping
+  ansible.builtin.set_fact:
+    namespace_mapping: "{{ namespace_mapping | combine({item: (destination_namespace if namespace_mapping_mode == 'Use one custom destination namespace' else item)}) }}"
+  loop: "{{ selected_namespaces }}"
+- name: Validate each selected VM and its disks
+  ansible.builtin.include_tasks: validate_vm.yml
+  loop: "{{ selected_vm_names }}"
+  loop_control:
+    loop_var: selected_vm_name
+- name: Record resolved protection plan
+  ansible.builtin.set_fact:
+    validated_plan:
+      protection_plan: "{{ protection_plan }}"
+      replication_interval_minutes: "{{ replication_interval_minutes | default(5) | int }}"
+      source_api: "{{ cluster_api }}"
+      namespace_mapping: "{{ namespace_mapping }}"
+      selected_vms: "{{ selected_summaries }}"
+      result: Selection and source disk checks passed; protection is not configured.
+      limitations: Namespace selections resolve at job execution. Destination readiness, SnapMirror prerequisites and application consistency require separate verification.
+- name: Show selected VMs and destination mapping
+  ansible.builtin.debug:
+    var: validated_plan
+- name: Pass the resolved plan to later workflow jobs
+  ansible.builtin.set_stats:
+    data:
+      resolved_protection_plan: "{{ validated_plan }}"
+    per_host: false
+    aggregate: false

@@ -1,0 +1,22 @@
+---
+- name: Check destination VM name
+  kubernetes.core.k8s_info:
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    namespace: "{{ target_vm.destination_namespace }}"
+    name: "{{ target_vm.vm.split('/')[1] }}"
+  register: target_vm_query
+  no_log: true
+- name: Refuse to overwrite an existing destination VM
+  ansible.builtin.assert:
+    that: target_vm_query.resources | length == 0
+    fail_msg: Destination VM already exists. Review the destination before enrolling this plan.
+- name: Check destination disk names
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: PersistentVolumeClaim
+    namespace: "{{ target_vm.destination_namespace }}"
+    name: "{{ item.pvc }}"
+  loop: "{{ target_vm.disks }}"
+  register: target_disk_query
+  failed_when: target_disk_query.resources | length > 0

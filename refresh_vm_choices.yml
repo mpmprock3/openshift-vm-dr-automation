@@ -4,24 +4,11 @@
   connection: local
   gather_facts: false
   tasks:
-    - name: Refresh saved survey choices through the AAP API
-      ansible.builtin.command:
-        argv:
-          - "{{ ansible_playbook_python }}"
-          - "{{ playbook_dir }}/scripts/refresh_vm_choices.py"
-        stdin: >-
-          {{ {'workflow_name': discovery_workflow_name | default('Enable DR Protection')} | to_json }}
-      register: refresh
-      changed_when: false
-      failed_when: false
-      no_log: true
-
-    - name: Display refresh result
-      ansible.builtin.debug:
-        msg: "{{ refresh.stdout | default('Discovery did not return output.') }}"
-      changed_when: refresh.rc == 0 and (refresh.stdout | from_json).changed | default(false)
-
-    - name: Check refresh succeeded
-      ansible.builtin.assert:
-        that: refresh.rc == 0
-        fail_msg: See the refresh result above. If verification failed after updating, rerun this job.
+    - name: Validate the attached API credential
+      ansible.builtin.import_role:
+        name: vmdr
+        tasks_from: credentials
+    - name: Discover DC VMs and refresh the protection survey
+      ansible.builtin.import_role:
+        name: vmdr
+        tasks_from: refresh

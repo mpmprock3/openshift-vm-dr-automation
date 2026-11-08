@@ -1,0 +1,21 @@
+---
+- name: Call the AAP survey API
+  ansible.builtin.uri:
+    url: "{{ lookup('env', 'AAP_SURVEY_HOST') | regex_replace('/$', '') }}{{ survey_path }}"
+    method: "{{ survey_method | default('GET') }}"
+    headers:
+      Authorization: "Bearer {{ lookup('env', 'AAP_SURVEY_TOKEN') }}"
+    body_format: "{{ 'json' if survey_method | default('GET') == 'POST' else 'raw' }}"
+    body: "{{ survey_body | default(omit) }}"
+    return_content: true
+    follow_redirects: none
+    unredirected_headers: [Authorization]
+    use_netrc: false
+    use_proxy: "{{ aap_survey_use_proxy | default(true) }}"
+    ca_path: "{{ lookup('env', 'AAP_SURVEY_CA') | default(omit, true) }}"
+    validate_certs: true
+    status_code: [200, 201, 204]
+    timeout: 60
+  register: survey_response
+  no_log: true
+  changed_when: survey_method | default('GET') == 'POST'

@@ -1,0 +1,23 @@
+---
+- name: Revalidate selected disk
+  ansible.builtin.include_tasks: validate_disk.yml
+- name: Read selected persistent volume
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: PersistentVolume
+    name: "{{ pvc_query.resources[0].spec.volumeName }}"
+  register: pv_query
+  no_log: true
+- name: Require a Trident CSI persistent volume
+  ansible.builtin.assert:
+    that:
+      - pv_query.resources | length == 1
+      - pv_query.resources[0].spec.csi.driver | default('') == 'csi.trident.netapp.io'
+- name: Include exact PVC, PV and storage class
+  ansible.builtin.include_tasks: add_reference.yml
+  loop:
+    - {version: v1, kind: PersistentVolumeClaim, namespace: "{{ current_vm.metadata.namespace }}", name: "{{ disk_claim }}"}
+    - {version: v1, kind: PersistentVolume, namespace: '', name: "{{ pvc_query.resources[0].spec.volumeName }}"}
+    - {group: storage.k8s.io, version: v1, kind: StorageClass, namespace: '', name: "{{ pvc_query.resources[0].spec.storageClassName }}"}
+  loop_control:
+    loop_var: dependency_ref

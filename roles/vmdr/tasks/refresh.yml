@@ -1,0 +1,92 @@
+---
+- name: Require AAP survey credentials
+  ansible.builtin.assert:
+    that:
+      - lookup('env', 'AAP_SURVEY_HOST') is match('^https://[^/]+/?$')
+      - lookup('env', 'AAP_SURVEY_TOKEN') | length > 0
+    fail_msg: Attach the AAP Survey Updater credential in addition to OpenShift DC.
+  no_log: true
+- name: Discover all DC virtual machines, including stopped VMs
+  kubernetes.core.k8s_info:
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+  register: discovered_vms
+  no_log: true
+- name: Initialize survey choices
+  ansible.builtin.set_fact:
+    discovered_vm_names: []
+    discovered_namespaces: "{{ discovered_vms.resources | map(attribute='metadata.namespace') | unique | sort }}"
+- name: Collect VM names without exposing VM configuration
+  ansible.builtin.set_fact:
+    discovered_vm_names: "{{ discovered_vm_names + [item.namespace ~ '/' ~ item.name] }}"
+  loop: "{{ discovered_vms.resources | map(attribute='metadata') | list }}"
+  loop_control:
+    label: "{{ item.namespace }}/{{ item.name }}"
+- name: Refuse to replace choices with an empty inventory
+  ansible.builtin.assert:
+    that: discovered_vm_names | length > 0
+    fail_msg: DC returned no VMs. The existing survey has not been changed.
+- name: Find the target AAP workflow
+  ansible.builtin.include_tasks: survey_api.yml
+  vars:
+    survey_path: "/api/controller/v2/workflow_job_templates/?{{ {'name': discovery_workflow_name | default('Enable DR Protection')} | urlencode }}"
+- name: Require exactly one visible workflow
+  ansible.builtin.assert:
+    that: survey_response.json.count == 1
+    fail_msg: Expected exactly one matching workflow. Check the workflow name and AAP token permissions.
+- name: Record survey endpoint
+  ansible.builtin.set_fact:
+    survey_endpoint: "/api/controller/v2/workflow_job_templates/{{ survey_response.json.results[0].id }}/survey_spec/"
+- name: Read the existing survey
+  ansible.builtin.include_tasks: survey_api.yml
+  vars:
+    survey_path: "{{ survey_endpoint }}"
+- name: Retain survey definition
+  ansible.builtin.set_fact:
+    original_survey: "{{ survey_response.json }}"
+  no_log: true
+- name: Check the two multiple-select survey questions
+  ansible.builtin.assert:
+    that:
+      - original_survey.spec | selectattr('variable', 'equalto', item) | list | length == 1
+      - (original_survey.spec | selectattr('variable', 'equalto', item) | first).type == 'multiselect'
+    fail_msg: source_vms and source_namespaces must each exist once as multiselect survey questions.
+  loop: [source_vms, source_namespaces]
+- name: Render refreshed survey while preserving all other questions
+  ansible.builtin.set_fact:
+    refreshed_survey: "{{ lookup('template', 'survey.yaml.j2') | from_yaml }}"
+  no_log: true
+- name: Check that the survey has not been edited during discovery
+  ansible.builtin.include_tasks: survey_api.yml
+  vars:
+    survey_path: "{{ survey_endpoint }}"
+- name: Reject concurrent survey edits
+  ansible.builtin.assert:
+    that: survey_response.json == original_survey
+    fail_msg: Survey changed during discovery; finish editing and rerun refresh.
+- name: Save discovered choices in AAP
+  ansible.builtin.include_tasks: survey_api.yml
+  vars:
+    survey_path: "{{ survey_endpoint }}"
+    survey_method: POST
+    survey_body: "{{ refreshed_survey }}"
+  when: refreshed_survey != original_survey
+- name: Read back the saved survey
+  ansible.builtin.include_tasks: survey_api.yml
+  vars:
+    survey_path: "{{ survey_endpoint }}"
+- name: Verify refreshed choices
+  ansible.builtin.assert:
+    that:
+      - (saved_question.choices.splitlines() if saved_question.choices is string else saved_question.choices) | sort == expected_question.choices.splitlines() | sort
+      - saved_question.default == ''
+  loop: [source_vms, source_namespaces]
+  vars:
+    saved_question: "{{ survey_response.json.spec | selectattr('variable', 'equalto', item) | first }}"
+    expected_question: "{{ refreshed_survey.spec | selectattr('variable', 'equalto', item) | first }}"
+- name: Display discovered choices
+  ansible.builtin.debug:
+    msg:
+      source_vms: "{{ discovered_vm_names | unique | sort }}"
+      source_namespaces: "{{ discovered_namespaces }}"
+      result: Open a NEW protection launch form to see the refreshed choices. No VMs are selected by default.

@@ -1,0 +1,10 @@
+apiVersion: protect.trident.netapp.io/v1
+kind: Snapshot
+metadata:
+  name: {{ application_name }}-initial
+  namespace: {{ application_namespace }}
+  labels:
+    app.kubernetes.io/managed-by: {{ protect_owner }}
+spec:
+  applicationRef: {{ application_name }}
+  appVaultRef: {{ protect_source_vault }}

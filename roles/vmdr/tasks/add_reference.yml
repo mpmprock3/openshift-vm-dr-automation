@@ -1,0 +1,11 @@
+---
+- name: Add exact named resource matcher
+  ansible.builtin.set_fact:
+    resource_matchers: "{{ resource_matchers + [matcher] if matcher not in resource_matchers else resource_matchers }}"
+    cluster_kinds: "{{ cluster_kinds + [cluster_kind] if dependency_ref.namespace | default('') == '' and dependency_ref.kind != 'PersistentVolume' and cluster_kind not in cluster_kinds else cluster_kinds }}"
+  vars:
+    gvk: "{{ {'version': dependency_ref.version, 'kind': dependency_ref.kind} | combine({'group': dependency_ref.group} if dependency_ref.group | default('') else {}) }}"
+    matcher: "{{ gvk | combine({'names': [dependency_ref.name]}) | combine({'namespaces': [dependency_ref.namespace]} if dependency_ref.namespace | default('') else {}) }}"
+    cluster_kind:
+      groupVersionKind: "{{ gvk }}"
+      labelSelector: {}
