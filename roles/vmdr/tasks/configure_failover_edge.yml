@@ -13,8 +13,7 @@
   vars:
     survey_path: "/api/controller/v2/workflow_job_template_nodes/{{ failover_node_ids[failover_edge.source] }}/success_nodes/"
     survey_method: POST
-    survey_body:
-      id: "{{ failover_node_ids[failover_edge.destination] | int }}"
+    survey_body: "{{ {'id': failover_node_ids[failover_edge.destination] | int} }}"
   when:
     - failover_edge.destination != ''
     - survey_response.json.count == 0

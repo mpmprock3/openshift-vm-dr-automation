@@ -52,7 +52,7 @@
   vars:
     survey_path: "/api/controller/v2/job_templates/{{ configured_job_id }}/credentials/"
     survey_method: POST
-    survey_body: {id: "{{ credential_id | int }}"}
+    survey_body: "{{ {'id': credential_id | int} }}"
   loop: "{{ missing_credential_ids }}"
   loop_control:
     loop_var: credential_id

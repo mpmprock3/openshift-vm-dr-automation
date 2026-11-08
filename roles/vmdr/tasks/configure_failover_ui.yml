@@ -47,7 +47,14 @@
       - survey_response.json.count | int <= 1
       - survey_response.json.count == 0 or survey_response.json.results[0].description == 'Managed by vmdr native failover setup'
       - survey_response.json.count == 0 or not survey_response.json.results[0].allow_simultaneous
-      - survey_response.json.count == 0 or survey_response.json.results[0].organization == failover_organization
+- name: Require the expected workflow organization
+  ansible.builtin.assert:
+    that: (survey_response.json.results[0].organization | string) == (failover_organization | string)
+    fail_msg: >-
+      Fail Over to DR organization mismatch: expected {{ failover_organization }},
+      actual {{ survey_response.json.results[0].organization }}.
+      Setup will not move an existing workflow between organizations.
+  when: survey_response.json.count | int == 1
 - name: Create workflow with concurrent launches disabled
   ansible.builtin.include_tasks: survey_api.yml
   vars:
@@ -56,7 +63,7 @@
     survey_body:
       name: Fail Over to DR
       description: Managed by vmdr native failover setup
-      organization: "{{ failover_organization }}"
+      organization: "{{ failover_organization | int }}"
       allow_simultaneous: false
       survey_enabled: true
   when: survey_response.json.count | default(0) == 0
