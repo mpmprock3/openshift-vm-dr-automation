@@ -1,0 +1,20 @@
+---
+- name: Require matching managed job settings
+  ansible.builtin.assert:
+    that:
+      - item.key in existing_job_settings
+      - >-
+        (item.value | string == existing_job_settings[item.key] | string)
+        or (item.key == 'execution_environment'
+            and item.value in [none, '']
+            and existing_job_settings[item.key] in [none, ''])
+    fail_msg: >-
+      Job template {{ desired_job_settings.name }} differs at {{ item.key }}:
+      expected={{ item.value | to_json }} ({{ item.value | type_debug }}),
+      actual={{ existing_job_settings[item.key] | default('FIELD MISSING') | to_json }}
+      ({{ existing_job_settings[item.key] | default('FIELD MISSING') | type_debug }}).
+      Setup will not overwrite this setting.
+    quiet: true
+  loop: "{{ desired_job_settings | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"

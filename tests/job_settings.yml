@@ -1,0 +1,43 @@
+---
+- name: Check template comparisons across Ansible scalar types
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    desired_job_settings:
+      name: Prepare DR Failover
+      project: "12"
+      inventory: "4"
+      execution_environment: ""
+      playbook: prepare_failover.yml
+      allow_simultaneous: false
+      timeout: 7200
+    existing_job_settings:
+      name: Prepare DR Failover
+      project: 12
+      inventory: 4
+      execution_environment: null
+      playbook: prepare_failover.yml
+      allow_simultaneous: false
+      timeout: 7200
+  tasks:
+    - name: Accept equivalent API integers and inherited execution environment
+      ansible.builtin.include_role:
+        name: vmdr
+        tasks_from: validate_job_settings
+    - name: Reject a real project mismatch
+      block:
+        - ansible.builtin.include_role:
+            name: vmdr
+            tasks_from: validate_job_settings
+          vars:
+            existing_job_settings:
+              name: Prepare DR Failover
+              project: 99
+      rescue:
+        - ansible.builtin.assert:
+            that: "'differs at project' in ansible_failed_result.results[0].msg or 'differs at project' in (ansible_failed_result | to_json)"
+        - ansible.builtin.set_fact:
+            mismatch_rejected: true
+    - ansible.builtin.assert:
+        that: mismatch_rejected | default(false)

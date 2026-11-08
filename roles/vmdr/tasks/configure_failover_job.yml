@@ -16,12 +16,15 @@
   ansible.builtin.include_tasks: survey_api.yml
   vars:
     survey_path: "/api/controller/v2/job_templates/?{{ {'name':failover_job.name} | urlencode }}"
-- name: Require unique managed job templates with matching settings
+- name: Require an unambiguous job template name
   ansible.builtin.assert:
-    that:
-      - survey_response.json.count | int <= 1
-      - survey_response.json.count == 0 or (survey_response.json.results[0] | combine(desired_job_settings)) == survey_response.json.results[0]
-    fail_msg: Existing job template differs from this definition. Review it; setup will not overwrite it.
+    that: survey_response.json.count | int <= 1
+    fail_msg: "More than one job template is named {{ failover_job.name }}."
+- name: Compare existing job settings field by field
+  ansible.builtin.include_tasks: validate_job_settings.yml
+  vars:
+    existing_job_settings: "{{ survey_response.json.results[0] }}"
+  when: survey_response.json.count | int == 1
 - name: Create missing job template
   ansible.builtin.include_tasks: survey_api.yml
   vars:
