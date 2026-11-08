@@ -74,6 +74,13 @@ class API:
         while True:
             obj = self.request(path)
             actual = obj.get('status', {}).get('state', 'Unknown')
+            if '/appmirrorrelationships/' in path and state == 'Established':
+                namespace = obj['metadata']['namespace']
+                attempts = self.request(GROUP + '/namespaces/' + namespace + '/appmirrorupdates')['items']
+                for attempt in attempts:
+                    if (attempt.get('spec', {}).get('appMirrorRelationshipRef') == obj['metadata']['name']
+                            and attempt.get('status', {}).get('state') == 'Running'):
+                        validate_destination_volumes(attempt.get('status', {}).get('destinationVolumes', []))
             application_ready = '/applications/' in path and state == 'Ready' and any(
                 condition.get('type') == 'Ready' and condition.get('status') == 'True'
                 for condition in obj.get('status', {}).get('conditions', []))
@@ -99,6 +106,22 @@ def contains(actual, expected):
     if isinstance(expected, dict):
         return isinstance(actual, dict) and all(k in actual and contains(actual[k], v) for k, v in expected.items())
     return actual == expected
+
+
+def validate_destination_volumes(volumes):
+    seen = set()
+    for volume in volumes:
+        source = volume.get('sourcePVC', {})
+        destination = volume.get('destinationPVC', {})
+        target = (destination.get('namespace'), destination.get('name'))
+        if not all(target):
+            raise ValueError('Transfer contains an unmapped destination for source PVC ' +
+                             source.get('namespace', '') + '/' + source.get('name', '') +
+                             '. Inspect the source Application/archive; no failover was attempted.')
+        if target in seen:
+            raise ValueError('Transfer contains duplicate destination PVC ' + '/'.join(target) +
+                             '. Inspect source volume selection; restarting AAP will not repair the archive.')
+        seen.add(target)
 
 
 def resource(kind, namespace, name, spec):
@@ -127,7 +150,10 @@ def build_application(api, plan):
     def add(group, version, kind, ns, name):
         if name:
             matches.add((group, version, kind, ns or '', name))
-            if not ns:
+            # PVs are discovered through the selected PVCs. Explicitly selecting
+            # all PVs here risks including unrelated archive volume records.
+            # Retain the exact PV resourceFilter matcher below.
+            if not ns and kind != 'PersistentVolume':
                 cluster_kinds.add((group, version, kind))
     pvcs = {(p['metadata']['namespace'], p['metadata']['name']): p for p in api.request('/api/v1/persistentvolumeclaims')['items']}
     scs = {s['metadata']['name']: s for s in api.request('/apis/storage.k8s.io/v1/storageclasses')['items']}

@@ -78,13 +78,23 @@ class ProtectionTests(unittest.TestCase):
         self.assertTrue(all('names' in m for m in matches))
         self.assertNotIn('private-inline-data', str(spec))
         self.assertTrue(all(entry.get('labelSelector') == {} for entry in spec['includedClusterScopedResources']))
-        core = next(entry['groupVersionKind'] for entry in spec['includedClusterScopedResources']
-                    if entry['groupVersionKind']['kind'] == 'PersistentVolume')
-        self.assertNotIn('group', core)
+        self.assertFalse(any(entry['groupVersionKind']['kind'] == 'PersistentVolume'
+                             for entry in spec['includedClusterScopedResources']))
         self.assertTrue(all(m.get('group') != '' for m in matches))
         storage = next(entry['groupVersionKind'] for entry in spec['includedClusterScopedResources']
                        if entry['groupVersionKind']['kind'] == 'StorageClass')
         self.assertEqual(storage['group'], 'storage.k8s.io')
+
+    def test_duplicate_and_unmapped_transfer_volumes_rejected(self):
+        volume = {'sourcePVC': {'namespace': 'default', 'name': 'vm-a'},
+                  'destinationPVC': {'namespace': 'vmdr', 'name': 'vm-a'}}
+        p.validate_destination_volumes([volume])
+        with self.assertRaisesRegex(ValueError, 'duplicate destination'):
+            p.validate_destination_volumes([volume, copy.deepcopy(volume)])
+        bad = {'sourcePVC': {'namespace': 'test', 'name': 'vm-b'},
+               'destinationPVC': {'namespace': '', 'name': 'vm-b'}}
+        with self.assertRaisesRegex(ValueError, 'unmapped destination'):
+            p.validate_destination_volumes([volume, bad])
 
     def test_application_ready_condition_without_state(self):
         obj = {'status': {'conditions': [{'type': 'Ready', 'status': 'True'}],
