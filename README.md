@@ -49,7 +49,7 @@ Existing Applications with incompatible immutable specifications need a new plan
 
 ## Execution environment
 
-The tested Ansible generation is ansible-core 2.19. The collection is pinned to `kubernetes.core` 6.6.0. Kubernetes module dependencies are packaged in the execution environment; the customer does not write Python code.
+The main local tests use ansible-core 2.19. The collection is pinned to `kubernetes.core` 6.6.0, whose declared minimum is ansible-core 2.16.0. The environment check enforces that minimum and prints the actual job runtime version; AAP 2.6 can run jobs in an older execution environment. Kubernetes module dependencies are packaged in the execution environment; the customer does not write Python code.
 
 An Ansible Builder version 3 definition is supplied at `execution-environment/execution-environment.yml`. It uses the AAP 2.6 minimal RHEL 9 base image and declares the Kubernetes client, PyYAML and jsonpatch libraries.
 

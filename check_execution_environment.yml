@@ -8,10 +8,13 @@
       ansible.builtin.import_role:
         name: vmdr
         tasks_from: credentials
-    - name: Require the tested AAP 2.6 Ansible generation
+    - name: Show the execution environment Ansible version
+      ansible.builtin.debug:
+        msg: "This job is running ansible-core {{ ansible_version.full }}; kubernetes.core 6.6.0 requires at least 2.16.0."
+    - name: Require the Kubernetes collection minimum Ansible version
       ansible.builtin.assert:
-        that: ansible_version.full is version('2.19', '>=')
-        fail_msg: Select an AAP 2.6 execution environment with ansible-core 2.19 or newer.
+        that: ansible_version.full is version('2.16.0', '>=')
+        fail_msg: "This execution environment runs ansible-core {{ ansible_version.full }}. The pinned kubernetes.core 6.6.0 collection requires 2.16.0 or newer. Select a compatible execution environment; the AAP platform version does not determine the job runtime version."
     - name: Verify Kubernetes collection, client libraries and VM API access
       kubernetes.core.k8s_info:
         api_version: kubevirt.io/v1
