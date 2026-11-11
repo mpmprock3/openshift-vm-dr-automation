@@ -1,0 +1,59 @@
+---
+- name: Read selected VM metadata without disclosing guest credentials
+  kubernetes.core.k8s_info:
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    namespace: "{{ failback_vm_namespace }}"
+    name: "{{ failback_vm.vm.split('/')[1] }}"
+  register: failback_vm_query
+  no_log: true
+- name: Require original selected disk names
+  ansible.builtin.assert:
+    that:
+      - failback_vm_query.resources | length == 1
+      - failback_claims | unique | sort == failback_vm.disks | map(attribute='pvc') | unique | sort
+    fail_msg: Selected VM is missing or disk membership changed. Review before failback.
+  vars:
+    failback_volumes: "{{ failback_vm_query.resources[0].spec.template.spec.volumes | default([]) }}"
+    failback_claims: >-
+      {{ (failback_volumes | selectattr('persistentVolumeClaim', 'defined') | map(attribute='persistentVolumeClaim.claimName') | list) +
+         (failback_volumes | selectattr('dataVolume', 'defined') | map(attribute='dataVolume.name') | list) }}
+- name: Inspect selected VMI
+  kubernetes.core.k8s_info:
+    api_version: kubevirt.io/v1
+    kind: VirtualMachineInstance
+    namespace: "{{ failback_vm_namespace }}"
+    name: "{{ failback_vm.vm.split('/')[1] }}"
+  register: failback_vmi_query
+  no_log: true
+- name: Require DC copy to remain stopped
+  ansible.builtin.assert:
+    that:
+      - failback_vmi_query.resources | length == 0
+      - failback_vm_query.resources[0].spec.runStrategy | default('Halted' if not failback_vm_query.resources[0].spec.running | default(false) else 'Always') == 'Halted'
+    fail_msg: Original DC VM is not conclusively halted. Do not reverse replicate over an active copy.
+  when: failback_site == 'DC'
+- name: Require the active DR instance to be Ready
+  ansible.builtin.assert:
+    that:
+      - failback_vmi_query.resources | length == 1
+      - failback_vmi_query.resources[0].status.phase | default('') == 'Running'
+      - failback_vmi_query.resources[0].status.conditions | default([]) | selectattr('type', 'equalto', 'Ready') | selectattr('status', 'equalto', 'True') | list | length > 0
+  when: failback_site == 'DR'
+- name: Inspect selected persistent disks
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: PersistentVolumeClaim
+    namespace: "{{ failback_vm_namespace }}"
+    name: "{{ item.pvc }}"
+  loop: "{{ failback_vm.disks }}"
+  register: failback_disk
+  failed_when: failback_disk.resources | length != 1 or failback_disk.resources[0].status.phase | default('') != 'Bound'
+- name: Report selected VM identity without guest configuration
+  ansible.builtin.debug:
+    msg:
+      site: "{{ failback_site }}"
+      vm: "{{ failback_vm_namespace }}/{{ failback_vm.vm.split('/')[1] }}"
+      vm_uid: "{{ failback_vm_query.resources[0].metadata.uid }}"
+      disk_names: "{{ failback_vm.disks | map(attribute='pvc') | list }}"
+      active_instances: "{{ failback_vmi_query.resources | length }}"

@@ -187,3 +187,7 @@ oc --context=DR get nodes -L kubevirt.io/schedulable
 ```
 
 Local regression coverage: `ANSIBLE_ROLES_PATH=roles ansible-playbook -i localhost, tests/compute.yml`. The emulation branch has local test coverage; live DR recovery still needs to be verified in the lab.
+
+### Data-preserving failback preparation
+
+See [FAILBACK.md](docs/FAILBACK.md) for the native Ansible DR scope repair, baseline snapshot job, and read-only DC/DR assessments. Complete reverse replication and failback are not yet implemented; this preparation does not switch workloads back to DC.

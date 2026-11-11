@@ -1,0 +1,64 @@
+---
+- name: Exercise DR namespace selection guards without a cluster
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    current_dr_members:
+      - vm: vmdr/centos-vm
+        destination_namespace: vmdr
+    valid_filter:
+      resourceSelectionCriteria: Include
+      resourceMatchers:
+        - kind: VirtualMachine
+          names: [centos-vm]
+          namespaces: [vmdr]
+        - kind: PersistentVolumeClaim
+          names: [centos-vm]
+          namespaces: [vmdr]
+  tasks:
+    - name: Accept live DR namespace selection
+      ansible.builtin.include_role:
+        name: vmdr
+        tasks_from: validate_failback_filter
+      vars:
+        failback_rebuilt_filter: "{{ valid_filter }}"
+    - name: Initialize rejection evidence
+      ansible.builtin.set_fact:
+        stale_namespace_rejected: false
+        unrelated_vm_rejected: false
+    - name: Exercise stale source namespace rejection
+      block:
+        - ansible.builtin.include_role:
+            name: vmdr
+            tasks_from: validate_failback_filter
+          vars:
+            failback_rebuilt_filter:
+              resourceSelectionCriteria: Include
+              resourceMatchers:
+                - kind: VirtualMachine
+                  names: [centos-vm]
+                  namespaces: [my-vm]
+      rescue:
+        - ansible.builtin.set_fact:
+            stale_namespace_rejected: true
+    - name: Exercise unrelated VM rejection
+      block:
+        - ansible.builtin.include_role:
+            name: vmdr
+            tasks_from: validate_failback_filter
+          vars:
+            failback_rebuilt_filter:
+              resourceSelectionCriteria: Include
+              resourceMatchers:
+                - kind: VirtualMachine
+                  names: [centos-vm, test-vm]
+                  namespaces: [vmdr]
+      rescue:
+        - ansible.builtin.set_fact:
+            unrelated_vm_rejected: true
+    - name: Require both dangerous selections to have been rejected
+      ansible.builtin.assert:
+        that:
+          - stale_namespace_rejected
+          - unrelated_vm_rejected

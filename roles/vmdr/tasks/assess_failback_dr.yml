@@ -1,0 +1,127 @@
+---
+- name: Require an explicit enrolled DR relationship
+  ansible.builtin.assert:
+    that:
+      - recovery_target | default('') is match('^[a-z0-9][a-z0-9-]*/[a-z0-9][a-z0-9.-]*[a-z0-9]$')
+    fail_msg: Set recovery_target to the namespace/name of the promoted DR relationship.
+- name: Read the durable recovery catalog
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ConfigMap
+    namespace: "{{ recovery_target.split('/')[0] }}"
+    name: "{{ recovery_target.split('/')[1] }}-plan"
+  register: failback_catalog
+- name: Require the managed catalog
+  ansible.builtin.assert:
+    that:
+      - failback_catalog.resources | length == 1
+      - failback_catalog.resources[0].metadata.labels['app.kubernetes.io/managed-by'] | default('') == protect_owner
+- name: Load original membership
+  ansible.builtin.set_fact:
+    failback_plan: "{{ failback_catalog.resources[0].data['plan.json'] | from_json }}"
+- name: Require the correct DR endpoint and original enrolled target
+  ansible.builtin.assert:
+    that:
+      - failback_plan.schema_version == 1
+      - failback_plan.destination_api == cluster_api
+      - failback_plan.source_api != cluster_api
+      - failback_plan.mirror_namespace ~ '/' ~ failback_plan.mirror_name == recovery_target
+      - failback_plan.selected_vms | length > 0
+- name: Inspect the original promoted relationship
+  kubernetes.core.k8s_info:
+    api_version: "{{ protect_api_version }}"
+    kind: AppMirrorRelationship
+    namespace: "{{ failback_plan.mirror_namespace }}"
+    name: "{{ failback_plan.mirror_name }}"
+  register: failback_amr_query
+- name: Require a completed failover of the original relationship
+  ansible.builtin.assert:
+    that:
+      - failback_amr_query.resources | length == 1
+      - failback_amr_query.resources[0].metadata.uid == failback_plan.mirror_uid
+      - failback_amr_query.resources[0].spec.sourceApplicationUID == failback_plan.application_uid
+      - failback_amr_query.resources[0].spec.desiredState == 'Promoted'
+      - failback_amr_query.resources[0].status.state | default('') == 'Promoted'
+    fail_msg: Expected the original relationship in completed Promoted state. No automatic reset or adoption is allowed.
+- name: Resolve the active DR application
+  ansible.builtin.set_fact:
+    failback_dr_application_name: "{{ failback_amr_query.resources[0].status.destinationApplicationRef }}"
+- name: Read active DR Application
+  kubernetes.core.k8s_info:
+    api_version: "{{ protect_api_version }}"
+    kind: Application
+    namespace: "{{ failback_plan.mirror_namespace }}"
+    name: "{{ failback_dr_application_name }}"
+  register: failback_application
+- name: Require the active application
+  ansible.builtin.assert:
+    that:
+      - failback_application.resources | length == 1
+      - failback_application.resources[0].status.conditions | default([]) | selectattr('type', 'equalto', 'Ready') | selectattr('status', 'equalto', 'True') | list | length > 0
+- name: Inspect selected DR workloads and disks
+  ansible.builtin.include_tasks: assess_failback_vm.yml
+  loop: "{{ failback_plan.selected_vms }}"
+  loop_control:
+    loop_var: failback_vm
+    label: "{{ failback_vm.vm }}"
+  vars:
+    failback_site: DR
+    failback_vm_namespace: "{{ failback_vm.destination_namespace }}"
+- name: Read DR schedules for the active application
+  kubernetes.core.k8s_info:
+    api_version: "{{ protect_api_version }}"
+    kind: Schedule
+    namespace: "{{ failback_plan.mirror_namespace }}"
+  register: failback_schedules
+- name: Read installed ShutdownSnapshot definition
+  kubernetes.core.k8s_info:
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    name: shutdownsnapshots.protect.trident.netapp.io
+  register: failback_shutdown_crd
+- name: Read installed AMR definition
+  kubernetes.core.k8s_info:
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    name: appmirrorrelationships.protect.trident.netapp.io
+  register: failback_amr_crd
+- name: Require installed failback APIs
+  ansible.builtin.assert:
+    that:
+      - failback_shutdown_crd.resources | length == 1
+      - failback_amr_crd.resources | length == 1
+- name: Extract the served v1 schemas
+  ansible.builtin.set_fact:
+    failback_shutdown_schema: "{{ (failback_shutdown_crd.resources[0].spec.versions | selectattr('name', 'equalto', 'v1') | selectattr('served', 'equalto', true) | first).schema.openAPIV3Schema.properties }}"
+    failback_amr_schema: "{{ (failback_amr_crd.resources[0].spec.versions | selectattr('name', 'equalto', 'v1') | selectattr('served', 'equalto', true) | first).schema.openAPIV3Schema.properties }}"
+- name: Require explicit final recovery point selection
+  ansible.builtin.assert:
+    that:
+      - "'appVaultRef' in failback_shutdown_schema.spec.properties"
+      - "'applicationRef' in failback_shutdown_schema.spec.properties"
+      - "'promotedSnapshot' in failback_amr_schema.spec.properties"
+    fail_msg: Installed APIs differ from the planned ShutdownSnapshot/promotedSnapshot procedure.
+- name: Show DR failback assessment
+  ansible.builtin.debug:
+    msg:
+      result: Read-only DR assessment; no reverse replication or failback performed.
+      active_application: "{{ failback_plan.mirror_namespace }}/{{ failback_dr_application_name }}"
+      application_uid: "{{ failback_application.resources[0].metadata.uid }}"
+      application_spec_for_scope_review: "{{ failback_application.resources[0].spec }}"
+      application_schedules: "{{ failback_schedules.resources | selectattr('spec.applicationRef', 'equalto', failback_dr_application_name) | map(attribute='metadata.name') | list }}"
+      shutdown_snapshot_spec: "{{ failback_shutdown_schema.spec }}"
+      shutdown_snapshot_status: "{{ failback_shutdown_schema.status | default({}) }}"
+      promoted_snapshot_schema: "{{ failback_amr_schema.spec.properties.promotedSnapshot }}"
+      remaining: Review restored selectors, preserved common snapshots, backend reverse permissions and transfer completion semantics before enabling mutation stages.
+- name: Pass non-secret assessment to DC
+  ansible.builtin.set_stats:
+    per_host: false
+    aggregate: false
+    data:
+      failback_assessment:
+        plan: "{{ failback_plan }}"
+        dr_application_name: "{{ failback_dr_application_name }}"
+        dr_application_uid: "{{ failback_application.resources[0].metadata.uid }}"
+        original_amr_uid: "{{ failback_amr_query.resources[0].metadata.uid }}"
+        original_amr_spec: "{{ failback_amr_query.resources[0].spec }}"
+        assessed_at: "{{ now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') }}"

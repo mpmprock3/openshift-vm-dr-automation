@@ -1,0 +1,55 @@
+---
+- name: Require preceding DR assessment from the same workflow
+  ansible.builtin.assert:
+    that:
+      - failback_assessment is defined
+      - failback_assessment.plan.source_api == cluster_api
+      - failback_assessment.plan.destination_api != cluster_api
+    fail_msg: Run after Assess Failback DR with the original DC credential.
+- name: Load the original protection plan
+  ansible.builtin.set_fact:
+    failback_plan: "{{ failback_assessment.plan }}"
+- name: Inspect original DC Application
+  kubernetes.core.k8s_info:
+    api_version: "{{ protect_api_version }}"
+    kind: Application
+    namespace: "{{ failback_plan.application_namespace }}"
+    name: "{{ failback_plan.application_name }}"
+  register: failback_dc_application
+- name: Require the original application identity
+  ansible.builtin.assert:
+    that:
+      - failback_dc_application.resources | length == 1
+      - failback_dc_application.resources[0].metadata.uid == failback_plan.application_uid
+    fail_msg: Original DC application was replaced or removed; reverse resync needs separate recovery handling.
+- name: Inspect original selected DC workloads
+  ansible.builtin.include_tasks: assess_failback_vm.yml
+  loop: "{{ failback_plan.selected_vms }}"
+  loop_control:
+    loop_var: failback_vm
+    label: "{{ failback_vm.vm }}"
+  vars:
+    failback_site: DC
+    failback_vm_namespace: "{{ failback_vm.vm.split('/')[0] }}"
+- name: Read source schedules
+  kubernetes.core.k8s_info:
+    api_version: "{{ protect_api_version }}"
+    kind: Schedule
+    namespace: "{{ failback_plan.application_namespace }}"
+  register: failback_dc_schedules
+- name: Read source snapshots
+  kubernetes.core.k8s_info:
+    api_version: "{{ protect_api_version }}"
+    kind: Snapshot
+    namespace: "{{ failback_plan.application_namespace }}"
+  register: failback_dc_snapshots
+- name: Report DC assessment and explicit implementation boundary
+  ansible.builtin.debug:
+    msg:
+      result: Read-only checks passed. This is not authorization or readiness certification for reverse resync.
+      application_spec_for_scope_review: "{{ failback_dc_application.resources[0].spec }}"
+      application_schedules: "{{ failback_dc_schedules.resources | selectattr('spec.applicationRef', 'equalto', failback_plan.application_name) | map(attribute='metadata.name') | list }}"
+      retained_snapshot_names: "{{ failback_dc_snapshots.resources | selectattr('spec.applicationRef', 'equalto', failback_plan.application_name) | map(attribute='metadata.name') | list }}"
+      selected_vms: "{{ failback_plan.selected_vms | map(attribute='vm') | list }}"
+      authoritative_site: DR
+      next: Review assessment output before implementing reverse-resync and final-shutdown mutations. No AMR, schedule, VM, PVC or PV has been changed.

@@ -1,0 +1,17 @@
+---
+- name: Require Include selection with exactly the enrolled DR VM names
+  ansible.builtin.assert:
+    that:
+      - failback_rebuilt_filter.resourceSelectionCriteria == 'Include'
+      - failback_rebuilt_filter.resourceMatchers | selectattr('kind', 'equalto', 'VirtualMachine') | map(attribute='names') | flatten | unique | sort == current_dr_members | map(attribute='vm') | map('regex_replace', '^.*/', '') | unique | sort
+      - failback_rebuilt_filter.resourceMatchers | selectattr('kind', 'equalto', 'VirtualMachine') | map(attribute='namespaces') | flatten | unique | sort == current_dr_members | map(attribute='destination_namespace') | unique | sort
+- name: Refuse unnamed or out-of-scope matchers
+  ansible.builtin.assert:
+    that:
+      - item.names | default([]) | length > 0
+      - item.namespaces | default([]) | difference(current_dr_members | map(attribute='destination_namespace') | list) | length == 0
+      - item.kind in ['PersistentVolume', 'StorageClass', 'VolumeSnapshotClass', 'VirtualMachineClusterInstancetype', 'VirtualMachineClusterPreference'] or item.namespaces | default([]) | length > 0
+    fail_msg: Rebuilt failback matcher is broad or references a namespace outside the enrolled DR scope.
+  loop: "{{ failback_rebuilt_filter.resourceMatchers }}"
+  loop_control:
+    label: "{{ item.kind }}"

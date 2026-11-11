@@ -1,0 +1,140 @@
+---
+- name: Require a stable failback preparation identifier
+  ansible.builtin.assert:
+    that:
+      - failback_request_id | default('') is match('^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$')
+    fail_msg: Set failback_request_id to a stable name such as poc-failback-001; reuse it on retry.
+- name: Initialize current DR membership from the enrolled catalog
+  ansible.builtin.set_fact:
+    current_dr_members: []
+- name: Read each current DR VM incarnation
+  kubernetes.core.k8s_info:
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    namespace: "{{ item.destination_namespace }}"
+    name: "{{ item.vm.split('/')[1] }}"
+  loop: "{{ failback_plan.selected_vms }}"
+  register: failback_current_vms
+  no_log: true
+- name: Require each enrolled DR VM to still exist
+  ansible.builtin.assert:
+    that: item.resources | length == 1
+  loop: "{{ failback_current_vms.results }}"
+  no_log: true
+- name: Build DR dependency inputs using live UIDs
+  ansible.builtin.set_fact:
+    current_dr_members: "{{ current_dr_members + [item.item | combine({'vm': item.item.destination_namespace ~ '/' ~ item.item.vm.split('/')[1], 'uid': item.resources[0].metadata.uid})] }}"
+  loop: "{{ failback_current_vms.results }}"
+  no_log: true
+- name: Require preserved application namespace scope
+  ansible.builtin.assert:
+    that:
+      - failback_application.resources[0].spec.includedNamespaces | map(attribute='namespace') | sort == current_dr_members | map(attribute='destination_namespace') | unique | sort
+    fail_msg: DR Application namespace membership differs from the catalog; immutable scope must be reviewed before repair.
+- name: Discover exact dependencies from live DR resources
+  ansible.builtin.include_tasks: dependencies.yml
+  vars:
+    resolved_protection_plan:
+      selected_vms: "{{ current_dr_members }}"
+- name: Prepare rebuilt filter and stable snapshot name
+  ansible.builtin.set_fact:
+    failback_rebuilt_filter:
+      resourceSelectionCriteria: Include
+      resourceMatchers: "{{ resource_matchers | sort(attribute='kind') }}"
+    failback_baseline_name: "{{ failback_dr_application_name[:32] }}-fb-{{ (failback_request_id | hash('sha256'))[:12] }}"
+- name: Validate narrow rebuilt VM and namespace selection
+  ansible.builtin.include_tasks: validate_failback_filter.yml
+- name: Require all discovered cluster resource types in the immutable application scope
+  ansible.builtin.assert:
+    that:
+      - cluster_kinds | difference(failback_application.resources[0].spec.includedClusterScopedResources | default([])) | length == 0
+    fail_msg: Live dependencies require cluster resource types outside the existing immutable Application scope; review before proceeding.
+- name: Record the proposed DR selection for review before changing it
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ failback_baseline_name }}-scope"
+        namespace: "{{ failback_plan.mirror_namespace }}"
+        labels:
+          app.kubernetes.io/managed-by: "{{ protect_owner }}"
+          app.kubernetes.io/component: failback-scope-review
+      data:
+        application_uid: "{{ failback_application.resources[0].metadata.uid }}"
+        proposed_filter.json: "{{ failback_rebuilt_filter | to_json }}"
+        note: Current dependency selection for failback; no VM definitions or credentials.
+- name: Re-read promoted relationship immediately before filter repair
+  kubernetes.core.k8s_info:
+    api_version: "{{ protect_api_version }}"
+    kind: AppMirrorRelationship
+    namespace: "{{ failback_plan.mirror_namespace }}"
+    name: "{{ failback_plan.mirror_name }}"
+  register: failback_rechecked_amr
+- name: Refuse filter repair if relationship identity or state changed
+  ansible.builtin.assert:
+    that:
+      - failback_rechecked_amr.resources | length == 1
+      - failback_rechecked_amr.resources[0].metadata.uid == failback_plan.mirror_uid
+      - failback_rechecked_amr.resources[0].spec.desiredState == 'Promoted'
+      - failback_rechecked_amr.resources[0].status.state | default('') == 'Promoted'
+- name: Repair only the mutable filter with an atomic application identity check
+  kubernetes.core.k8s_json_patch:
+    api_version: "{{ protect_api_version }}"
+    kind: Application
+    namespace: "{{ failback_plan.mirror_namespace }}"
+    name: "{{ failback_dr_application_name }}"
+    patch:
+      - {op: test, path: /metadata/uid, value: "{{ failback_application.resources[0].metadata.uid }}"}
+      - {op: test, path: /metadata/resourceVersion, value: "{{ failback_application.resources[0].metadata.resourceVersion }}"}
+      - {op: add, path: /spec/resourceFilter, value: "{{ failback_rebuilt_filter }}"}
+  when: failback_application.resources[0].spec.resourceFilter | default({}) != failback_rebuilt_filter
+- name: Read back the DR selection before snapshotting
+  kubernetes.core.k8s_info:
+    api_version: "{{ protect_api_version }}"
+    kind: Application
+    namespace: "{{ failback_plan.mirror_namespace }}"
+    name: "{{ failback_dr_application_name }}"
+  register: failback_repaired_application
+- name: Require the exact proposed selection to be stored
+  ansible.builtin.assert:
+    that:
+      - failback_repaired_application.resources | length == 1
+      - failback_repaired_application.resources[0].metadata.uid == failback_application.resources[0].metadata.uid
+      - failback_repaired_application.resources[0].spec.resourceFilter == failback_rebuilt_filter
+- name: Validate the active DR archive vault
+  ansible.builtin.include_tasks: vault.yml
+  vars:
+    vault_name: "{{ failback_amr_query.resources[0].spec.destinationAppVaultRef }}"
+- name: Create a retained baseline snapshot of the active DR application
+  ansible.builtin.include_tasks: ensure.yml
+  vars:
+    desired_resource:
+      apiVersion: "{{ protect_api_version }}"
+      kind: Snapshot
+      metadata:
+        name: "{{ failback_baseline_name }}"
+        namespace: "{{ failback_plan.mirror_namespace }}"
+        labels:
+          app.kubernetes.io/managed-by: "{{ protect_owner }}"
+      spec:
+        applicationRef: "{{ failback_dr_application_name }}"
+        appVaultRef: "{{ failback_amr_query.resources[0].spec.destinationAppVaultRef }}"
+        reclaimPolicy: Retain
+- name: Wait for baseline snapshot completion
+  ansible.builtin.include_tasks: wait.yml
+  vars:
+    wait_kind: Snapshot
+    wait_name: "{{ failback_baseline_name }}"
+    wait_namespace: "{{ failback_plan.mirror_namespace }}"
+    wait_state: Completed
+- name: Report bounded preparation result
+  ansible.builtin.debug:
+    msg:
+      result: Live DR dependencies selected and baseline snapshot Completed. This does not yet perform reverse replication or failback.
+      application: "{{ failback_plan.mirror_namespace }}/{{ failback_dr_application_name }}"
+      snapshot: "{{ failback_baseline_name }}"
+      snapshot_status: "{{ readiness.resources[0].status }}"
+      unchanged: DR remains active; the promoted AMR and DC workloads were not changed.
+      next: Validate snapshot volume membership before building the reverse relationship. This online baseline is not the final shutdown snapshot and does not establish zero data loss.

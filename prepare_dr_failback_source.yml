@@ -1,0 +1,15 @@
+---
+- name: Prepare a correctly scoped snapshot of current DR data for failback
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - ansible.builtin.include_role:
+        name: vmdr
+        tasks_from: credentials
+    - ansible.builtin.include_role:
+        name: vmdr
+        tasks_from: assess_failback_dr
+    - ansible.builtin.include_role:
+        name: vmdr
+        tasks_from: prepare_dr_failback_source
