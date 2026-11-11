@@ -116,7 +116,7 @@ oc --context=dc get vm -A
 oc --context=dr get nodes -o custom-columns='NAME:.metadata.name,KVM:.status.allocatable.devices\.kubevirt\.io/kvm'
 ```
 
-DR must have suitable hardware virtualization capacity. The failover preflight requires a Ready, schedulable node with nonzero KVM capacity; that basic check does not reserve CPU/RAM or validate every VM scheduling constraint.
+DR must have suitable hardware virtualization capacity. By default, failover preflight requires a Ready, schedulable node with nonzero KVM capacity. For an intentionally emulated lab, see [POC software-emulation recovery](#poc-software-emulation-recovery) below. Neither path reserves CPU/RAM or validates every VM scheduling constraint.
 
 Create equivalent VM network attachments, VLAN connectivity and routing on DR. To demonstrate the same IP, arrange the guest's static configuration or DHCP reservation and DR reachability before failover. A matching subnet name alone is insufficient. Do not assign the same guest IP to two active copies.
 
@@ -480,3 +480,22 @@ Before the new cluster expires:
 - Retain the code and this guide so you can rebuild the configuration even when the AAP database is gone.
 
 The [main README](../README.md) describes implementation details, execution environment builds, resource-selection behavior and local tests. This rebuild guide is the operational starting point for a new lab.
+
+## POC software-emulation recovery
+
+When both lab clusters intentionally run with KubeVirt `useEmulation: true`, zero advertised KVM capacity does not alone prove that VMs cannot run. Hardware KVM remains the default requirement. For an emulation-based demonstration, add this variable to the **VMDR Localhost inventory** (preserving its other variables), then synchronize the project and rerun the failover workflow with the same request ID:
+
+```yaml
+protect_allow_emulation: true
+```
+
+This option does not configure emulation or modify the cluster. Before accepting a zero-KVM candidate, preflight reads DR's KubeVirt CR in `openshift-cnv`, requires exactly one instance with `useEmulation: true` and `Available=True`, and requires a Ready, uncordoned node labeled `kubevirt.io/schedulable=true`. Storage, replica freshness, isolation and recovered-VM checks remain in force. This POC mode does not establish production support or representative hardware performance.
+
+Read-only checks:
+
+```bash
+oc --context=DR get kubevirt.kubevirt.io -n openshift-cnv -o jsonpath='{range .items[*]}{.metadata.name}{" useEmulation="}{.spec.configuration.developerConfiguration.useEmulation}{"\n"}{.status.conditions}{"\n"}{end}'
+oc --context=DR get nodes -L kubevirt.io/schedulable
+```
+
+Local regression coverage: `ANSIBLE_ROLES_PATH=roles ansible-playbook -i localhost, tests/compute.yml`. The emulation branch has local test coverage; live DR recovery still needs to be verified in the lab.

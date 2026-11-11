@@ -119,7 +119,7 @@ The `Fail Over to DR` workflow promotes one enrolled protection group using its 
 
 The four success-linked jobs are:
 
-1. **Prepare DR Failover** (`prepare_failover.yml`, DR credential): load membership from the DR catalog, verify the enrolled AMR identity/mapping, inspect the replicated recovery point, require bound disks and a Ready schedulable KVM node, and reject pre-existing destination VMs before initial promotion.
+1. **Prepare DR Failover** (`prepare_failover.yml`, DR credential): load membership from the DR catalog, verify the enrolled AMR identity/mapping, inspect the replicated recovery point, require bound disks and a Ready schedulable compute candidate (KVM by default; explicitly opted-in and verified emulation for a POC), and reject pre-existing destination VMs before initial promotion.
 2. **Isolate Source VMs** (`isolate_source.yml`, DC credential): either pause the enrolled source snapshot schedule, set source VM `runStrategy: Halted` and wait for the VMIs to disappear; or record explicitly confirmed external fencing without connecting to DC.
 3. **Promote DR Replica** (`promote_dr_replica.yml`, DR credential): recheck the plan and recent isolation artifact, atomically mark the request and set AMR `desiredState: Promoted`, then wait for Trident Protect.
 4. **Verify DR Recovery** (`verify_dr_recovery.yml`, DR credential): inspect restored VM disk references and PVC binding, request start when needed, wait for Running/Ready VMIs, report interfaces and guest-agent status, and optionally check an HTTP endpoint.
@@ -168,3 +168,22 @@ ANSIBLE_ROLES_PATH=roles ansible-playbook -i localhost, tests/failover_guards.ym
 ```
 
 Local tests exercise stale replica rejection, missing external fencing, expired isolation evidence, another request's promotion marker, and the source-independent fencing branch. Simulated Kubernetes tests exercise enrollment/catalog creation, source halt, promotion, VM verification and promotion retry. A local HTTPS controller fixture tests workflow/template creation and API associations. These tests do not execute a real VM failover or validate NetApp controller behavior on a live cluster.
+
+## POC software-emulation recovery
+
+When both lab clusters intentionally run with KubeVirt `useEmulation: true`, zero advertised KVM capacity does not alone prove that VMs cannot run. Hardware KVM remains the default requirement. For an emulation-based demonstration, add this variable to the **VMDR Localhost inventory** (preserving its other variables), then synchronize the project and rerun the failover workflow with the same request ID:
+
+```yaml
+protect_allow_emulation: true
+```
+
+This option does not configure emulation or modify the cluster. Before accepting a zero-KVM candidate, preflight reads DR's KubeVirt CR in `openshift-cnv`, requires exactly one instance with `useEmulation: true` and `Available=True`, and requires a Ready, uncordoned node labeled `kubevirt.io/schedulable=true`. Storage, replica freshness, isolation and recovered-VM checks remain in force. This POC mode does not establish production support or representative hardware performance.
+
+Read-only checks:
+
+```bash
+oc --context=DR get kubevirt.kubevirt.io -n openshift-cnv -o jsonpath='{range .items[*]}{.metadata.name}{" useEmulation="}{.spec.configuration.developerConfiguration.useEmulation}{"\n"}{.status.conditions}{"\n"}{end}'
+oc --context=DR get nodes -L kubevirt.io/schedulable
+```
+
+Local regression coverage: `ANSIBLE_ROLES_PATH=roles ansible-playbook -i localhost, tests/compute.yml`. The emulation branch has local test coverage; live DR recovery still needs to be verified in the lab.

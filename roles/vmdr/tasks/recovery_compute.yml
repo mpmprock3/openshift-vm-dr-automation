@@ -1,0 +1,60 @@
+---
+- name: Initialize DR compute candidates
+  ansible.builtin.set_fact:
+    recovery_candidates: []
+    recovery_emulation_candidates: []
+    recovery_compute_mode: hardware-kvm
+    recovery_emulation_enabled: false
+- name: Confirm a single Available KubeVirt instance permits emulation
+  ansible.builtin.set_fact:
+    recovery_emulation_enabled: >-
+      {{ (recovery_kubevirt.resources[0].spec.configuration.developerConfiguration.useEmulation | default(false) | bool)
+         and (recovery_kubevirt.resources[0].status.conditions | default([]) |
+              selectattr('type', 'equalto', 'Available') | selectattr('status', 'equalto', 'True') | list | length > 0) }}
+  when:
+    - protect_allow_emulation | bool
+    - recovery_kubevirt.resources | default([]) | length == 1
+- name: Identify Ready schedulable nodes advertising KVM
+  ansible.builtin.set_fact:
+    recovery_candidates: "{{ recovery_candidates + [item.metadata.name] }}"
+  loop: "{{ recovery_nodes.resources }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+  when:
+    - not item.spec.unschedulable | default(false)
+    - item.status.conditions | selectattr('type', 'equalto', 'Ready') | selectattr('status', 'equalto', 'True') | list | length > 0
+    - item.status.allocatable['devices.kubevirt.io/kvm'] | default('0') | int > 0
+- name: Identify explicitly permitted POC emulation candidates
+  ansible.builtin.set_fact:
+    recovery_emulation_candidates: "{{ recovery_emulation_candidates + [item.metadata.name] }}"
+  loop: "{{ recovery_nodes.resources }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+  when:
+    - protect_allow_emulation | bool
+    - recovery_emulation_enabled | bool
+    - not item.spec.unschedulable | default(false)
+    - item.status.conditions | selectattr('type', 'equalto', 'Ready') | selectattr('status', 'equalto', 'True') | list | length > 0
+    - item.metadata.labels['kubevirt.io/schedulable'] | default('false') | string == 'true'
+- name: Use software emulation only when no hardware candidate exists
+  ansible.builtin.set_fact:
+    recovery_candidates: "{{ recovery_emulation_candidates }}"
+    recovery_compute_mode: software-emulation-poc
+  when:
+    - recovery_candidates | length == 0
+    - recovery_emulation_candidates | length > 0
+- name: Require a DR virtualization candidate
+  ansible.builtin.assert:
+    that: recovery_candidates | length > 0
+    fail_msg: >-
+      No eligible DR virtualization node. Hardware mode requires a Ready, uncordoned node with KVM > 0.
+      POC emulation additionally requires protect_allow_emulation=true, one Available KubeVirt instance
+      with useEmulation=true, and a Ready uncordoned node labeled kubevirt.io/schedulable=true.
+      No source VMs have been stopped by this preflight.
+- name: Explain POC emulation mode
+  ansible.builtin.debug:
+    msg: >-
+      POC software emulation accepted. This job does not enable or change cluster emulation settings.
+      This is not a hardware-performance or production-support validation; VM scheduling, disks,
+      source isolation and recovery verification still apply.
+  when: recovery_compute_mode == 'software-emulation-poc'

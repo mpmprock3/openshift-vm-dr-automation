@@ -1,0 +1,52 @@
+---
+- name: Test DR compute gates without a cluster
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    node:
+      metadata:
+        name: fixture-worker
+        labels: {kubevirt.io/schedulable: 'true'}
+      spec: {unschedulable: false}
+      status:
+        conditions: [{type: Ready, status: 'True'}]
+        allocatable: {devices.kubevirt.io/kvm: '0'}
+    kv:
+      spec:
+        configuration:
+          developerConfiguration: {useEmulation: true}
+      status:
+        conditions: [{type: Available, status: 'True'}]
+  tasks:
+    - name: Accept hardware without emulation opt-in
+      ansible.builtin.include_role:
+        name: vmdr
+        tasks_from: recovery_compute
+      vars:
+        recovery_nodes:
+          resources: "{{ [node | combine({'status': {'allocatable': {'devices.kubevirt.io/kvm': '1000'}}}, recursive=true)] }}"
+    - ansible.builtin.assert:
+        that: recovery_compute_mode == 'hardware-kvm'
+    - name: Accept explicit configured emulation
+      ansible.builtin.include_role:
+        name: vmdr
+        tasks_from: recovery_compute
+      vars:
+        protect_allow_emulation: true
+        recovery_nodes: {resources: "{{ [node] }}"}
+        recovery_kubevirt: {resources: "{{ [kv] }}"}
+    - ansible.builtin.assert:
+        that: recovery_compute_mode == 'software-emulation-poc'
+    - name: Test rejection cases
+      ansible.builtin.include_tasks: compute_reject.yml
+      loop:
+        - {name: no-opt-in, allow: false}
+        - {name: emulation-disabled, allow: true, emulation: false}
+        - {name: kubevirt-unavailable, allow: true, available: 'False'}
+        - {name: cordoned, allow: true, cordoned: true}
+        - {name: node-not-ready, allow: true, ready: 'False'}
+        - {name: not-kubevirt-schedulable, allow: true, schedulable: 'false'}
+      loop_control:
+        loop_var: scenario
+        label: "{{ scenario.name }}"

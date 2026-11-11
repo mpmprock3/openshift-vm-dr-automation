@@ -7,3 +7,5 @@ protect_wait_seconds: 1800
 protect_poll_seconds: 10
 protect_owner: aap-dr-poc
 protect_api_version: protect.trident.netapp.io/v1
+# Explicit opt-in for software-emulated lab VMs; never enables emulation on the cluster.
+protect_allow_emulation: false

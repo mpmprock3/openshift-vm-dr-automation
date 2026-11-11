@@ -8,23 +8,15 @@
     api_version: v1
     kind: Node
   register: recovery_nodes
-- name: Initialize hardware virtualization candidates
-  ansible.builtin.set_fact:
-    recovery_candidates: []
-- name: Identify Ready schedulable nodes advertising KVM
-  ansible.builtin.set_fact:
-    recovery_candidates: "{{ recovery_candidates + [item.metadata.name] }}"
-  loop: "{{ recovery_nodes.resources }}"
-  loop_control:
-    label: "{{ item.metadata.name }}"
-  when:
-    - not item.spec.unschedulable | default(false)
-    - item.status.conditions | selectattr('type', 'equalto', 'Ready') | selectattr('status', 'equalto', 'True') | list | length > 0
-    - item.status.allocatable['devices.kubevirt.io/kvm'] | default('0') | int > 0
-- name: Require a DR virtualization candidate
-  ansible.builtin.assert:
-    that: recovery_candidates | length > 0
-    fail_msg: No Ready schedulable DR node advertises KVM. Prepare OpenShift Virtualization compute before stopping source VMs.
+- name: Read DR KubeVirt configuration for explicitly enabled POC emulation
+  kubernetes.core.k8s_info:
+    api_version: kubevirt.io/v1
+    kind: KubeVirt
+    namespace: openshift-cnv
+  register: recovery_kubevirt
+  when: protect_allow_emulation | bool
+- name: Validate hardware or explicitly enabled POC compute
+  ansible.builtin.include_tasks: recovery_compute.yml
 - name: Verify destination disks and check for unrelated VMs
   ansible.builtin.include_tasks: recovery_destination.yml
   loop: "{{ recovery_plan.selected_vms }}"
@@ -38,8 +30,9 @@
       entire_protected_group: "{{ recovery_plan.selected_vms | map(attribute='vm') | list }}"
       snapshot: "{{ recovery_amr.status.lastTransferredSnapshot }}"
       snapshot_completion_age_seconds: "{{ recovery_snapshot_age_seconds }}"
+      compute_mode: "{{ recovery_compute_mode }}"
       source_handling: "{{ source_isolation_mode }}"
-      limitations: No new source snapshot or final sync. KVM-node and PVC checks do not prove scheduling capacity, network reachability, guest IP preservation or application consistency.
+      limitations: No new source snapshot or final sync. Compute and PVC checks do not prove scheduling capacity, network reachability, guest IP preservation or application consistency.
 - name: Pass prepared recovery plan to the next workflow node
   ansible.builtin.set_stats:
     per_host: false

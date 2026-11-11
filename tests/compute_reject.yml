@@ -1,0 +1,36 @@
+---
+- ansible.builtin.set_fact:
+    compute_rejected: false
+- block:
+    - ansible.builtin.include_role:
+        name: vmdr
+        tasks_from: recovery_compute
+      vars:
+        protect_allow_emulation: "{{ scenario.allow }}"
+        recovery_nodes:
+          resources:
+            - metadata:
+                name: fixture-worker
+                labels:
+                  kubevirt.io/schedulable: "{{ scenario.schedulable | default('true') }}"
+              spec:
+                unschedulable: "{{ scenario.cordoned | default(false) }}"
+              status:
+                conditions: [{type: Ready, status: "{{ scenario.ready | default('True') }}"}]
+                allocatable: {devices.kubevirt.io/kvm: '0'}
+        recovery_kubevirt:
+          resources:
+            - spec:
+                configuration:
+                  developerConfiguration:
+                    useEmulation: "{{ scenario.emulation | default(true) }}"
+              status:
+                conditions: [{type: Available, status: "{{ scenario.available | default('True') }}"}]
+  rescue:
+    - ansible.builtin.assert:
+        that: "'No eligible DR virtualization node' in ansible_failed_result.msg"
+    - ansible.builtin.set_fact:
+        compute_rejected: true
+- ansible.builtin.assert:
+    that: compute_rejected
+    fail_msg: "Unexpected acceptance of {{ scenario.name }}"
