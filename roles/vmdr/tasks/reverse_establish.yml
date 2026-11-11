@@ -1,0 +1,59 @@
+---
+- name: Require completed release of the original promoted relationship
+  ansible.builtin.assert:
+    that:
+      - reverse_dr_released == reverse_plan.request_id
+      - reverse_dc_ready.source_api == cluster_api
+- name: Recheck stopped DC workload identities immediately before reverse replication
+  ansible.builtin.include_tasks: assess_failback_dc.yml
+  vars:
+    failback_assessment: "{{ reverse_plan.assessment }}"
+- name: Require schedules remain absent on the new destination
+  ansible.builtin.assert:
+    that: failback_dc_schedules.resources | selectattr('spec.applicationRef', 'equalto', failback_plan.application_name) | list | length == 0
+- name: Build inverse namespace mapping
+  ansible.builtin.set_fact:
+    reverse_mapping: []
+- ansible.builtin.set_fact:
+    reverse_mapping: "{{ reverse_mapping + [{'source': item.value, 'destination': item.key}] }}"
+  loop: "{{ failback_plan.namespace_mapping | dict2items }}"
+- name: Create or verify reverse AMR on DC
+  ansible.builtin.include_tasks: ensure.yml
+  vars:
+    desired_resource:
+      apiVersion: "{{ protect_api_version }}"
+      kind: AppMirrorRelationship
+      metadata:
+        name: "{{ reverse_plan.reverse_name }}"
+        namespace: "{{ failback_plan.application_namespace }}"
+        labels:
+          app.kubernetes.io/managed-by: "{{ protect_owner }}"
+      spec:
+        desiredState: Established
+        sourceApplicationName: "{{ reverse_plan.assessment.dr_application_name }}"
+        sourceApplicationUID: "{{ reverse_plan.assessment.dr_application_uid }}"
+        sourceAppVaultRef: "{{ reverse_plan.assessment.original_amr_spec.destinationAppVaultRef }}"
+        destinationAppVaultRef: "{{ reverse_plan.assessment.original_amr_spec.sourceAppVaultRef }}"
+        namespaceMapping: "{{ reverse_mapping }}"
+        storageClassName: "{{ reverse_dc_ready.storage_class }}"
+        recurrenceRule: "{{ reverse_plan.assessment.original_amr_spec.recurrenceRule }}"
+- name: Wait for reverse replication
+  ansible.builtin.include_tasks: wait.yml
+  vars:
+    wait_kind: AppMirrorRelationship
+    wait_namespace: "{{ failback_plan.application_namespace }}"
+    wait_name: "{{ reverse_plan.reverse_name }}"
+    wait_state: Established
+- name: Require a successful reverse transfer
+  ansible.builtin.assert:
+    that:
+      - readiness.resources[0].status.lastTransfer.completionTimestamp is defined
+      - readiness.resources[0].status.lastTransferredSnapshot.name | default('') | length > 0
+      - readiness.resources[0].status.conditions | selectattr('type', 'equalto', 'LastTransferSucceeded') | selectattr('status', 'equalto', 'True') | list | length > 0
+- name: Report reverse replication without performing cutover
+  ansible.builtin.debug:
+    msg:
+      direction: DR to DC
+      relationship: "{{ failback_plan.application_namespace }}/{{ reverse_plan.reverse_name }}"
+      status: "{{ readiness.resources[0].status }}"
+      next: DR remains authoritative. Do not start DC VMs. Final shutdown snapshot and promotion are a separate, not-yet-implemented cutover stage.

@@ -1,0 +1,61 @@
+---
+- name: Require successful DC preparation from this operation
+  ansible.builtin.assert:
+    that:
+      - reverse_dc_ready.request_id == reverse_plan.request_id
+      - reverse_dc_ready.source_api == reverse_plan.assessment.plan.source_api
+- ansible.builtin.include_tasks: reverse_verify_source.yml
+- name: Read original promoted AMR
+  kubernetes.core.k8s_info:
+    api_version: "{{ protect_api_version }}"
+    kind: AppMirrorRelationship
+    namespace: "{{ failback_plan.mirror_namespace }}"
+    name: "{{ failback_plan.mirror_name }}"
+  register: reverse_old_amr
+- name: Require original promoted identity if still present
+  ansible.builtin.assert:
+    that:
+      - reverse_old_amr.resources[0].metadata.uid == failback_plan.mirror_uid
+      - reverse_old_amr.resources[0].spec.desiredState == 'Promoted'
+      - reverse_old_amr.resources[0].status.state == 'Promoted'
+  when: reverse_old_amr.resources | length > 0
+- name: Delete only the promoted AMR as required for reverse resync
+  kubernetes.core.k8s:
+    state: absent
+    api_version: "{{ protect_api_version }}"
+    kind: AppMirrorRelationship
+    namespace: "{{ failback_plan.mirror_namespace }}"
+    name: "{{ failback_plan.mirror_name }}"
+    delete_options:
+      preconditions:
+        uid: "{{ reverse_old_amr.resources[0].metadata.uid }}"
+        resourceVersion: "{{ reverse_old_amr.resources[0].metadata.resourceVersion }}"
+    wait: true
+    wait_timeout: "{{ protect_wait_seconds }}"
+  when: reverse_old_amr.resources | length > 0
+- name: Verify DR remains active after release
+  ansible.builtin.include_tasks: reverse_verify_source.yml
+- name: Create ongoing DR snapshot schedule
+  ansible.builtin.include_tasks: ensure.yml
+  vars:
+    desired_resource:
+      apiVersion: "{{ protect_api_version }}"
+      kind: Schedule
+      metadata:
+        name: "{{ reverse_plan.reverse_name }}-schedule"
+        namespace: "{{ failback_plan.mirror_namespace }}"
+        labels:
+          app.kubernetes.io/managed-by: "{{ protect_owner }}"
+      spec:
+        applicationRef: "{{ reverse_plan.assessment.dr_application_name }}"
+        appVaultRef: "{{ reverse_plan.assessment.original_amr_spec.destinationAppVaultRef }}"
+        backupRetention: '0'
+        snapshotRetention: '3'
+        enabled: true
+        granularity: Custom
+        recurrenceRule: "{{ reverse_plan.assessment.original_amr_spec.recurrenceRule }}"
+- ansible.builtin.set_stats:
+    per_host: false
+    aggregate: false
+    data:
+      reverse_dr_released: "{{ reverse_plan.request_id }}"

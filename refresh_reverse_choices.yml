@@ -1,0 +1,14 @@
+---
+- hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - ansible.builtin.include_role:
+        name: vmdr
+        tasks_from: credentials
+    - ansible.builtin.include_role:
+        name: vmdr
+        tasks_from: refresh_failback
+      vars:
+        failback_survey_template_name: Establish Reverse Replication
+        failback_survey_template_type: workflow_job_templates

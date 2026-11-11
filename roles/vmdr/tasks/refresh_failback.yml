@@ -21,24 +21,40 @@
   loop_control:
     loop_var: failback_choice_catalog
     label: "{{ failback_choice_catalog.metadata.name }}"
+- name: Discover resumable reverse operation records
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ConfigMap
+    label_selectors:
+      - app.kubernetes.io/component=reverse-replication-plan
+      - "app.kubernetes.io/managed-by={{ protect_owner }}"
+  register: reverse_choice_records
+  when: failback_survey_template_type | default('job_templates') == 'workflow_job_templates'
+- name: Include saved reverse operations for retry after AMR release
+  ansible.builtin.set_fact:
+    failback_choices: "{{ failback_choices + [saved.assessment.plan.protection_plan ~ ' (' ~ (saved.assessment.plan.selected_vms | map(attribute='vm') | join(', ')) ~ ') | ' ~ saved.target] }}"
+  vars:
+    saved: "{{ item.data['plan.json'] | from_json }}"
+  loop: "{{ reverse_choice_records.resources | default([]) }}"
+  when: saved.source_api == cluster_api
 - name: Find the preparation job template
   ansible.builtin.include_tasks: survey_api.yml
   vars:
-    survey_path: "/api/controller/v2/job_templates/?{{ {'name': 'Prepare DR Failback Source'} | urlencode }}"
+    survey_path: "/api/controller/v2/{{ failback_survey_template_type | default('job_templates') }}/?{{ {'name': failback_survey_template_name | default('Prepare DR Failback Source')} | urlencode }}"
 - name: Require the expected preparation playbook
   ansible.builtin.assert:
     that:
       - survey_response.json.count == 1
-      - survey_response.json.results[0].playbook == 'prepare_dr_failback_source.yml'
+      - failback_survey_template_type | default('job_templates') == 'workflow_job_templates' or survey_response.json.results[0].playbook == 'prepare_dr_failback_source.yml'
 - name: Record job endpoint and survey
   ansible.builtin.set_fact:
-    failback_job_path: "/api/controller/v2/job_templates/{{ survey_response.json.results[0].id }}/"
+    failback_job_path: "/api/controller/v2/{{ failback_survey_template_type | default('job_templates') }}/{{ survey_response.json.results[0].id }}/"
     failback_choice_survey:
       name: Failback preparation
       description: Select the protected group currently active on DR. Tracking IDs are automatic.
       spec:
         - question_name: Which protected VM group should be prepared for return to DC?
-          question_description: Choices are refreshed from promoted DR protection groups. This job prepares a snapshot; it does not perform cutover.
+          question_description: "{{ 'Establish DR-to-DC replication, removing the old promoted AMR and enrolled DC schedules. DR remains active; no final cutover.' if failback_survey_template_type | default('job_templates') == 'workflow_job_templates' else 'Prepare a DR baseline snapshot. This does not perform cutover.' }}"
           variable: failback_group
           type: multiplechoice
           required: true
@@ -69,4 +85,4 @@
   ansible.builtin.debug:
     msg:
       choices: "{{ failback_choices }}"
-      next: Open a fresh Prepare DR Failback Source launch form. Select a group; no request ID is required. No cluster resources were changed by this refresh.
+      next: "Open a fresh {{ failback_survey_template_name | default('Prepare DR Failback Source') }} launch form and select a group. No cluster resources were changed by this refresh."

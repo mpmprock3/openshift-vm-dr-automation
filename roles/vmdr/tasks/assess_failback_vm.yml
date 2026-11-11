@@ -29,6 +29,7 @@
 - name: Require DC copy to remain stopped
   ansible.builtin.assert:
     that:
+      - failback_vm_query.resources[0].metadata.uid == failback_vm.uid
       - failback_vmi_query.resources | length == 0
       - failback_vm_query.resources[0].spec.runStrategy | default('Halted' if not failback_vm_query.resources[0].spec.running | default(false) else 'Always') == 'Halted'
     fail_msg: Original DC VM is not conclusively halted. Do not reverse replicate over an active copy.

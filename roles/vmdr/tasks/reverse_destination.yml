@@ -1,0 +1,68 @@
+---
+- name: Require the preceding reverse plan
+  ansible.builtin.assert:
+    that:
+      - reverse_plan is defined
+      - reverse_plan.assessment.plan.source_api == cluster_api
+- ansible.builtin.include_tasks: assess_failback_dc.yml
+  vars:
+    failback_assessment: "{{ reverse_plan.assessment }}"
+- name: Check access to DR archive bucket from DC
+  ansible.builtin.include_tasks: vault.yml
+  vars:
+    vault_name: "{{ reverse_plan.assessment.original_amr_spec.destinationAppVaultRef }}"
+- ansible.builtin.assert:
+    that: vault_fingerprint == reverse_plan.source_vault_fingerprint
+- name: Check destination vault
+  ansible.builtin.include_tasks: vault.yml
+  vars:
+    vault_name: "{{ reverse_plan.assessment.original_amr_spec.sourceAppVaultRef }}"
+- name: Require unambiguous original disk storage class
+  ansible.builtin.set_fact:
+    reverse_storage_classes: "{{ failback_plan.selected_vms | map(attribute='disks') | flatten | map(attribute='storage_class') | unique | list }}"
+- ansible.builtin.assert:
+    that: reverse_storage_classes | length == 1
+    fail_msg: This reverse stage supports one destination storage class per group.
+- name: Inspect original destination storage class
+  kubernetes.core.k8s_info:
+    api_version: storage.k8s.io/v1
+    kind: StorageClass
+    name: "{{ reverse_storage_classes[0] }}"
+  register: reverse_sc
+- ansible.builtin.assert:
+    that:
+      - reverse_sc.resources | length == 1
+      - reverse_sc.resources[0].provisioner == 'csi.trident.netapp.io'
+- name: Require original application naming for existing destination reuse
+  ansible.builtin.assert:
+    that: reverse_plan.assessment.dr_application_name == failback_plan.application_name
+- name: Inspect competing DC replication relationships before source release
+  kubernetes.core.k8s_info:
+    api_version: "{{ protect_api_version }}"
+    kind: AppMirrorRelationship
+    namespace: "{{ failback_plan.application_namespace }}"
+  register: reverse_destination_amrs
+- name: Reject another relationship using the same application
+  ansible.builtin.assert:
+    that:
+      - reverse_plan.assessment.dr_application_name == failback_plan.application_name
+      - item.metadata.name == reverse_plan.reverse_name
+      - item.metadata.labels['app.kubernetes.io/managed-by'] | default('') == protect_owner
+      - item.spec.sourceApplicationUID == reverse_plan.assessment.dr_application_uid
+      - item.spec.desiredState == 'Established'
+    fail_msg: Existing destination relationship requires review before reverse replication.
+  loop: "{{ reverse_destination_amrs.resources | selectattr('spec.sourceApplicationName', 'equalto', failback_plan.application_name) | list }}"
+- name: Remove only managed schedules for the selected original application
+  ansible.builtin.include_tasks: reverse_remove_schedule.yml
+  loop: "{{ failback_dc_schedules.resources | selectattr('spec.applicationRef', 'equalto', failback_plan.application_name) | list }}"
+  loop_control:
+    loop_var: reverse_schedule
+- name: Pass destination validation
+  ansible.builtin.set_stats:
+    per_host: false
+    aggregate: false
+    data:
+      reverse_dc_ready:
+        request_id: "{{ reverse_plan.request_id }}"
+        storage_class: "{{ reverse_storage_classes[0] }}"
+        source_api: "{{ cluster_api }}"

@@ -1,0 +1,71 @@
+---
+- name: Require authoritative DR endpoint
+  ansible.builtin.assert:
+    that: reverse_plan.source_api == cluster_api
+- name: Load original membership
+  ansible.builtin.set_fact:
+    failback_plan: "{{ reverse_plan.assessment.plan }}"
+- name: Verify active DR application identity and selection
+  kubernetes.core.k8s_info:
+    api_version: "{{ protect_api_version }}"
+    kind: Application
+    namespace: "{{ failback_plan.mirror_namespace }}"
+    name: "{{ reverse_plan.assessment.dr_application_name }}"
+  register: reverse_source_app
+- name: Reject changed source scope
+  ansible.builtin.assert:
+    that:
+      - reverse_source_app.resources | length == 1
+      - reverse_source_app.resources[0].metadata.uid == reverse_plan.assessment.dr_application_uid
+      - reverse_source_app.resources[0].spec.resourceFilter == reverse_plan.source_filter
+      - reverse_source_app.resources[0].spec.includedNamespaces | map(attribute='namespace') | sort == failback_plan.namespace_mapping.values() | unique | sort
+- name: Build enrolled DR filter scope
+  ansible.builtin.set_fact:
+    current_dr_members: []
+- ansible.builtin.set_fact:
+    current_dr_members: "{{ current_dr_members + [item | combine({'vm': item.destination_namespace ~ '/' ~ item.vm.split('/')[1]})] }}"
+  loop: "{{ failback_plan.selected_vms }}"
+- name: Reject stale or broad Application VM selectors
+  ansible.builtin.include_tasks: validate_failback_filter.yml
+  vars:
+    failback_rebuilt_filter: "{{ reverse_source_app.resources[0].spec.resourceFilter }}"
+- name: Require the selected DR VMs to remain active
+  ansible.builtin.include_tasks: assess_failback_vm.yml
+  loop: "{{ failback_plan.selected_vms }}"
+  loop_control:
+    loop_var: failback_vm
+  vars:
+    failback_site: DR
+    failback_vm_namespace: "{{ failback_vm.destination_namespace }}"
+- name: Inspect verified preparation snapshot
+  kubernetes.core.k8s_info:
+    api_version: "{{ protect_api_version }}"
+    kind: Snapshot
+    namespace: "{{ failback_plan.mirror_namespace }}"
+    name: "{{ reverse_plan.baseline }}"
+  register: reverse_baseline
+- name: Require completed baseline owned by this DR application
+  ansible.builtin.assert:
+    that:
+      - reverse_baseline.resources | length == 1
+      - reverse_baseline.resources[0].status.state | default('') == 'Completed'
+      - reverse_baseline.resources[0].metadata.ownerReferences | selectattr('uid', 'equalto', reverse_plan.assessment.dr_application_uid) | list | length == 1
+      - reverse_baseline.resources[0].status.volumeSnapshots | default([]) | length > 0
+- name: Initialize captured PVC identities
+  ansible.builtin.set_fact:
+    reverse_captured_pvcs: []
+    reverse_expected_pvcs: []
+- name: Verify each recorded volume snapshot
+  ansible.builtin.include_tasks: reverse_volume.yml
+  loop: "{{ reverse_baseline.resources[0].status.volumeSnapshots }}"
+  loop_control:
+    loop_var: reverse_volume
+- name: Build expected PVC identities
+  ansible.builtin.set_fact:
+    reverse_expected_pvcs: "{{ reverse_expected_pvcs + [item.0.destination_namespace ~ '/' ~ item.1.pvc] }}"
+  loop: "{{ failback_plan.selected_vms | subelements('disks') }}"
+- name: Require exact captured disk membership
+  ansible.builtin.assert:
+    that:
+      - reverse_captured_pvcs | sort == reverse_expected_pvcs | unique | sort
+      - reverse_captured_pvcs | unique | length == reverse_captured_pvcs | length

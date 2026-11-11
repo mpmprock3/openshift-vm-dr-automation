@@ -1,0 +1,12 @@
+---
+- name: Configure reverse replication workflow without launching it
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - ansible.builtin.include_role:
+        name: vmdr
+        tasks_from: credentials
+    - ansible.builtin.include_role:
+        name: vmdr
+        tasks_from: configure_reverse_ui

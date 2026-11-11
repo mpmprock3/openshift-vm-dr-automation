@@ -1,0 +1,18 @@
+---
+- name: Refuse deletion of an unmanaged protection schedule
+  ansible.builtin.assert:
+    that: reverse_schedule.metadata.labels['app.kubernetes.io/managed-by'] | default('') == protect_owner
+- name: Remove enrolled schedule while retaining dependent snapshots
+  kubernetes.core.k8s:
+    state: absent
+    api_version: "{{ protect_api_version }}"
+    kind: Schedule
+    namespace: "{{ reverse_schedule.metadata.namespace }}"
+    name: "{{ reverse_schedule.metadata.name }}"
+    delete_options:
+      propagationPolicy: Orphan
+      preconditions:
+        uid: "{{ reverse_schedule.metadata.uid }}"
+        resourceVersion: "{{ reverse_schedule.metadata.resourceVersion }}"
+    wait: true
+    wait_timeout: "{{ protect_wait_seconds }}"

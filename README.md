@@ -190,4 +190,4 @@ Local regression coverage: `ANSIBLE_ROLES_PATH=roles ansible-playbook -i localho
 
 ### Data-preserving failback preparation
 
-See [FAILBACK.md](docs/FAILBACK.md) for the native Ansible DR scope repair, baseline snapshot job, and read-only DC/DR assessments. Complete reverse replication and failback are not yet implemented; this preparation does not switch workloads back to DC.
+See [FAILBACK.md](docs/FAILBACK.md) for the native Ansible DR scope repair, baseline snapshot job, and read-only DC/DR assessments. The separate reverse-replication workflow is now available with local simulated validation; final VM cutover is not yet implemented. See the same guide for setup and operational boundaries.

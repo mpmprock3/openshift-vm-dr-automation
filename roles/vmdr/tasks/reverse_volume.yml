@@ -1,0 +1,29 @@
+---
+- name: Read captured volume snapshot
+  kubernetes.core.k8s_info:
+    api_version: snapshot.storage.k8s.io/v1
+    kind: VolumeSnapshot
+    namespace: "{{ reverse_volume.namespace }}"
+    name: "{{ reverse_volume.name }}"
+  register: reverse_vs
+- name: Require ready snapshot from this preparation
+  ansible.builtin.assert:
+    that:
+      - reverse_vs.resources | length == 1
+      - reverse_vs.resources[0].status.readyToUse | default(false) | bool
+      - reverse_vs.resources[0].metadata.labels['protect.trident.netapp.io/created-by-snapshot-uid'] == reverse_baseline.resources[0].metadata.uid
+- name: Verify captured PVC still exists
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: PersistentVolumeClaim
+    namespace: "{{ reverse_volume.namespace }}"
+    name: "{{ reverse_vs.resources[0].spec.source.persistentVolumeClaimName }}"
+  register: reverse_pvc
+- name: Require original captured PVC incarnation
+  ansible.builtin.assert:
+    that:
+      - reverse_pvc.resources | length == 1
+      - reverse_pvc.resources[0].metadata.uid in reverse_baseline.resources[0].status.pvcs
+      - reverse_pvc.resources[0].status.phase == 'Bound'
+- ansible.builtin.set_fact:
+    reverse_captured_pvcs: "{{ reverse_captured_pvcs + [reverse_volume.namespace ~ '/' ~ reverse_pvc.resources[0].metadata.name] }}"

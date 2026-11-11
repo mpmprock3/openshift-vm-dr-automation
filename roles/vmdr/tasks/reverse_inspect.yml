@@ -1,0 +1,82 @@
+---
+- ansible.builtin.include_tasks: resolve_failback_selection.yml
+- name: Require an enrolled target
+  ansible.builtin.assert:
+    that: recovery_target | default('') is match('^[a-z0-9][a-z0-9-]*/[a-z0-9][a-z0-9.-]*[a-z0-9]$')
+- name: Read the saved reverse operation record
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ConfigMap
+    namespace: "{{ recovery_target.split('/')[0] }}"
+    name: "reverse-{{ (recovery_target | hash('sha256'))[:24] }}"
+  register: reverse_record
+- name: Build first reverse operation record
+  when: reverse_record.resources | length == 0
+  block:
+    - ansible.builtin.include_tasks: assess_failback_dr.yml
+    - ansible.builtin.include_tasks: failback_identity.yml
+    - name: Require invertible namespace mapping
+      ansible.builtin.assert:
+        that: failback_plan.namespace_mapping.values() | list | length == failback_plan.namespace_mapping.values() | unique | length
+        fail_msg: Multiple original namespaces map to one DR namespace; reverse mapping requires explicit redesign.
+    - name: Check source archive vault
+      ansible.builtin.include_tasks: vault.yml
+      vars:
+        vault_name: "{{ failback_amr_query.resources[0].spec.destinationAppVaultRef }}"
+    - name: Build durable reverse plan
+      ansible.builtin.set_fact:
+        reverse_plan:
+          assessment: "{{ ({'plan': failback_plan, 'dr_application_name': failback_dr_application_name, 'dr_application_uid': failback_application.resources[0].metadata.uid, 'original_amr_uid': failback_plan.mirror_uid, 'original_amr_spec': failback_amr_query.resources[0].spec}) }}"
+          source_api: "{{ cluster_api }}"
+          target: "{{ recovery_target }}"
+          request_id: "{{ failback_effective_request_id }}"
+          source_filter: "{{ failback_application.resources[0].spec.resourceFilter }}"
+          source_vault_fingerprint: "{{ vault_fingerprint }}"
+          baseline: "{{ failback_dr_application_name[:32] }}-fb-{{ (failback_effective_request_id | hash('sha256'))[:12] }}"
+          reverse_name: "reverse-{{ (failback_plan.mirror_uid | hash('sha256'))[:24] }}"
+- name: Load saved plan on retry
+  ansible.builtin.set_fact:
+    reverse_plan: "{{ reverse_record.resources[0].data['plan.json'] | from_json }}"
+  when: reverse_record.resources | length == 1
+- name: Require correct record identity
+  ansible.builtin.assert:
+    that:
+      - reverse_plan.source_api == cluster_api
+      - reverse_plan.target == recovery_target
+      - reverse_record.resources | length == 0 or reverse_record.resources[0].metadata.labels['app.kubernetes.io/managed-by'] | default('') == protect_owner
+- name: Reject a later or different promotion before any reverse mutation
+  kubernetes.core.k8s_info:
+    api_version: "{{ protect_api_version }}"
+    kind: AppMirrorRelationship
+    namespace: "{{ reverse_plan.assessment.plan.mirror_namespace }}"
+    name: "{{ reverse_plan.assessment.plan.mirror_name }}"
+  register: reverse_inspected_amr
+- ansible.builtin.assert:
+    that:
+      - reverse_inspected_amr.resources[0].metadata.uid == reverse_plan.assessment.original_amr_uid
+      - reverse_inspected_amr.resources[0].spec.desiredState == 'Promoted'
+      - reverse_inspected_amr.resources[0].status.state == 'Promoted'
+  when: reverse_inspected_amr.resources | length > 0
+- ansible.builtin.include_tasks: reverse_verify_source.yml
+- name: Persist operation before deleting any relationship
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "reverse-{{ (recovery_target | hash('sha256'))[:24] }}"
+        namespace: "{{ recovery_target.split('/')[0] }}"
+        labels:
+          app.kubernetes.io/managed-by: "{{ protect_owner }}"
+          app.kubernetes.io/component: reverse-replication-plan
+      data:
+        plan.json: "{{ reverse_plan | to_json }}"
+  when: reverse_record.resources | length == 0
+- name: Pass reverse operation to DC
+  ansible.builtin.set_stats:
+    per_host: false
+    aggregate: false
+    data:
+      reverse_plan: "{{ reverse_plan }}"
+      failback_assessment: "{{ reverse_plan.assessment }}"

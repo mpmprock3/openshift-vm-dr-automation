@@ -1,0 +1,80 @@
+---
+- name: Initialize setup identities
+  ansible.builtin.set_fact:
+    base_templates: {}
+    failover_template_ids: {}
+    failover_node_ids: {}
+- name: Reuse existing working template configuration
+  ansible.builtin.include_tasks: read_base_template.yml
+  loop: [Configure DC Protection, Establish DR Replication, Refresh Failback Choices]
+  loop_control:
+    loop_var: base_template_name
+- name: Create or verify reverse stage templates
+  ansible.builtin.include_tasks: configure_failover_job.yml
+  loop:
+    - {name: Inspect Reverse Source, playbook: inspect_reverse_source.yml, base: Establish DR Replication}
+    - {name: Prepare Reverse Destination, playbook: prepare_reverse_destination.yml, base: Configure DC Protection}
+    - {name: Release Promoted Relationship, playbook: release_promoted_relationship.yml, base: Establish DR Replication}
+    - {name: Establish Reverse Mirror, playbook: establish_reverse_replication.yml, base: Configure DC Protection}
+    - {name: Refresh Reverse Choices, playbook: refresh_reverse_choices.yml, base: Refresh Failback Choices}
+  loop_control:
+    loop_var: failover_job
+- ansible.builtin.include_tasks: survey_api.yml
+  vars:
+    survey_path: "/api/controller/v2/workflow_job_templates/?{{ {'name': 'Enable DR Protection'} | urlencode }}"
+- ansible.builtin.assert:
+    that: survey_response.json.count == 1
+- ansible.builtin.set_fact:
+    reverse_organization: "{{ survey_response.json.results[0].organization }}"
+- ansible.builtin.include_tasks: survey_api.yml
+  vars:
+    survey_path: "/api/controller/v2/workflow_job_templates/?{{ {'name': 'Establish Reverse Replication'} | urlencode }}"
+- name: Refuse ambiguous or foreign workflows
+  ansible.builtin.assert:
+    that:
+      - survey_response.json.count | int <= 1
+      - survey_response.json.count == 0 or survey_response.json.results[0].description == 'Managed by vmdr reverse replication setup'
+      - survey_response.json.count == 0 or survey_response.json.results[0].organization | string == reverse_organization | string
+      - survey_response.json.count == 0 or not survey_response.json.results[0].allow_simultaneous
+- name: Create the independent reverse replication workflow
+  ansible.builtin.include_tasks: survey_api.yml
+  vars:
+    survey_path: /api/controller/v2/workflow_job_templates/
+    survey_method: POST
+    survey_body: "{{ {'name': 'Establish Reverse Replication', 'description': 'Managed by vmdr reverse replication setup', 'organization': reverse_organization | int, 'allow_simultaneous': false, 'survey_enabled': true} }}"
+  when: survey_response.json.count == 0
+- ansible.builtin.set_fact:
+    failover_workflow_id: "{{ survey_response.json.id | default((survey_response.json.results | default([{}]) | first).id) }}"
+- ansible.builtin.include_tasks: survey_api.yml
+  vars:
+    survey_path: "/api/controller/v2/workflow_job_templates/{{ failover_workflow_id }}/workflow_nodes/?page_size=200"
+- name: Reject unexpected nodes
+  ansible.builtin.assert:
+    that:
+      - survey_response.json.next | default(none) == none
+      - survey_response.json.results | map(attribute='identifier') | difference(['reverse-inspect', 'reverse-destination', 'reverse-release', 'reverse-establish']) | length == 0
+- name: Create serial reverse stages
+  ansible.builtin.include_tasks: configure_failover_node.yml
+  loop:
+    - {identifier: reverse-inspect, job: Inspect Reverse Source}
+    - {identifier: reverse-destination, job: Prepare Reverse Destination}
+    - {identifier: reverse-release, job: Release Promoted Relationship}
+    - {identifier: reverse-establish, job: Establish Reverse Mirror}
+  loop_control:
+    loop_var: failover_node
+- name: Connect success-only stages
+  ansible.builtin.include_tasks: configure_failover_edge.yml
+  loop:
+    - {source: reverse-inspect, destination: reverse-destination}
+    - {source: reverse-destination, destination: reverse-release}
+    - {source: reverse-release, destination: reverse-establish}
+    - {source: reverse-establish, destination: ''}
+  loop_control:
+    loop_var: failover_edge
+- name: Populate the workflow group survey
+  ansible.builtin.include_tasks: refresh_failback.yml
+  vars:
+    failback_survey_template_name: Establish Reverse Replication
+    failback_survey_template_type: workflow_job_templates
+- ansible.builtin.debug:
+    msg: Establish Reverse Replication is configured. Launch that workflow separately to change replication direction; setup has not launched it. DR remains active until a separate final cutover.
