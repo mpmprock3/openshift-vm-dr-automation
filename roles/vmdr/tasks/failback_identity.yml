@@ -1,0 +1,7 @@
+---
+- name: Derive a repeatable preparation identity from this promotion
+  ansible.builtin.set_fact:
+    failback_effective_request_id: "{{ failback_request_id | default('auto-' ~ ((failback_amr_query.resources[0].metadata.uid ~ ':' ~ (failback_amr_query.resources[0].metadata.annotations | default({})).get('vmdr.aap/request-id', '') ~ ':' ~ (failback_amr_query.resources[0].status.conditions | selectattr('type', 'equalto', 'Promoted') | selectattr('status', 'equalto', 'True') | map(attribute='lastTransitionTime') | first)) | hash('sha256'))[:24], true) }}"
+- name: Require a valid internal preparation identity
+  ansible.builtin.assert:
+    that: failback_effective_request_id is match('^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$')

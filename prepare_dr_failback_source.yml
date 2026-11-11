@@ -9,6 +9,9 @@
         tasks_from: credentials
     - ansible.builtin.include_role:
         name: vmdr
+        tasks_from: resolve_failback_selection
+    - ansible.builtin.include_role:
+        name: vmdr
         tasks_from: assess_failback_dr
     - ansible.builtin.include_role:
         name: vmdr

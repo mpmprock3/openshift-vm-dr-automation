@@ -1,0 +1,15 @@
+---
+- name: Parse enrolled group
+  ansible.builtin.set_fact:
+    choice_plan: "{{ failback_choice_catalog.data['plan.json'] | from_json }}"
+- name: Match the catalog to its current relationship
+  ansible.builtin.set_fact:
+    choice_amrs: "{{ failback_choice_amrs.resources | selectattr('metadata.uid', 'equalto', choice_plan.mirror_uid) | list }}"
+- name: Add a human-readable group with its enrolled VM names
+  ansible.builtin.set_fact:
+    failback_choices: "{{ failback_choices + [choice_plan.protection_plan ~ ' (' ~ (choice_plan.selected_vms | map(attribute='vm') | join(', ')) ~ ') | ' ~ choice_plan.mirror_namespace ~ '/' ~ choice_plan.mirror_name] }}"
+  when:
+    - choice_plan.destination_api == cluster_api
+    - choice_amrs | length == 1
+    - choice_amrs[0].spec.desiredState == 'Promoted'
+    - choice_amrs[0].status.state | default('') == 'Promoted'

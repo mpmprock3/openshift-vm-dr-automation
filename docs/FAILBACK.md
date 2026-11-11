@@ -14,15 +14,14 @@ It does not stop VMs, delete the promoted AMR, reverse replication, or modify DC
 
 1. Sync the VMDR automation project to the repository revision containing this file.
 2. Create a **Job Template** named **Prepare DR Failback Source**. Use the project's existing inventory and tested execution environment, playbook `prepare_dr_failback_source.yml`, and the **OpenShift DR** credential. This is separate from Enable DR Protection and Fail Over to DR.
-3. Set these extra variables for the current POC:
+3. Remove the previously suggested `recovery_target` and `failback_request_id` from the preparation template's Extra variables. Operators will select a group in a survey instead.
+4. Create **Refresh Failback Choices**, playbook `refresh_failback_choices.yml`, using the same project/inventory/execution environment, **OpenShift DR** credential, and the **AAP API credential used by Refresh Recovery Choices** (injecting AAP_SURVEY_HOST/TOKEN). Run it once. It installs/enables the preparation survey and disables concurrent preparation launches.
+5. Open a fresh **Prepare DR Failback Source** launch form. Select a group such as `demo-vm-plan (my-vm/centos-vm) | vmdr/demo-vm-plan-dc9cfe0e-mirror` and launch. No manually entered AMR name or request ID is required. The identifier at the end distinguishes otherwise identically named groups.
+6. Inspect the reported snapshot name and status and confirm its captured volumes correspond to the current DR PVC/PV. The unrelated `my-vm/test-vm` remains outside the enrolled group.
 
-   ```yaml
-   recovery_target: vmdr/demo-vm-plan-dc9cfe0e-mirror
-   failback_request_id: poc-failback-001
-   ```
+The refresh reads managed recovery catalogs and currently Promoted relationships. It updates stored AAP survey choices; it is not an on-open live dropdown. Run it after failover or schedule it in AAP. The preparation job independently rechecks the catalog, AMR identity/state, and live workload membership, so a stale choice is not permission to act on a different relationship. An empty list installs a placeholder that cannot pass preparation target validation.
 
-4. Launch once. Reuse the same request ID when retrying that preparation attempt. A completed snapshot with that ID is reused; it is not refreshed by a retry. A new preparation capture requires a new request ID.
-5. Inspect the reported snapshot name and status and confirm that its captured volumes correspond to the current DR `centos-vm` PVC/PV. The source `my-vm/test-vm` is outside the enrolled group and must remain untouched.
+Preparation IDs are derived automatically from the AMR UID, promotion request annotation, and Promoted transition timestamp. Retries of the same promotion reuse the same baseline; another promotion gets another identity. Retrying does not capture later writes again: this is only the preparation baseline, never the final cutover snapshot. An optional explicit `failback_request_id` remains available for administrator-controlled fresh captures, not as a customer survey question.
 
 Read-only follow-up commands (DR):
 

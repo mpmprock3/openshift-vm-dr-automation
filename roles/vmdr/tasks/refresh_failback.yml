@@ -1,0 +1,72 @@
+---
+- name: Discover enrolled catalogs on DR
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ConfigMap
+    label_selectors:
+      - app.kubernetes.io/component=recovery-plan
+      - "app.kubernetes.io/managed-by={{ protect_owner }}"
+  register: failback_choice_catalogs
+- name: Discover current replication states
+  kubernetes.core.k8s_info:
+    api_version: "{{ protect_api_version }}"
+    kind: AppMirrorRelationship
+  register: failback_choice_amrs
+- name: Initialize eligible group choices
+  ansible.builtin.set_fact:
+    failback_choices: []
+- name: Select currently promoted enrolled groups
+  ansible.builtin.include_tasks: failback_choice.yml
+  loop: "{{ failback_choice_catalogs.resources }}"
+  loop_control:
+    loop_var: failback_choice_catalog
+    label: "{{ failback_choice_catalog.metadata.name }}"
+- name: Find the preparation job template
+  ansible.builtin.include_tasks: survey_api.yml
+  vars:
+    survey_path: "/api/controller/v2/job_templates/?{{ {'name': 'Prepare DR Failback Source'} | urlencode }}"
+- name: Require the expected preparation playbook
+  ansible.builtin.assert:
+    that:
+      - survey_response.json.count == 1
+      - survey_response.json.results[0].playbook == 'prepare_dr_failback_source.yml'
+- name: Record job endpoint and survey
+  ansible.builtin.set_fact:
+    failback_job_path: "/api/controller/v2/job_templates/{{ survey_response.json.results[0].id }}/"
+    failback_choice_survey:
+      name: Failback preparation
+      description: Select the protected group currently active on DR. Tracking IDs are automatic.
+      spec:
+        - question_name: Which protected VM group should be prepared for return to DC?
+          question_description: Choices are refreshed from promoted DR protection groups. This job prepares a snapshot; it does not perform cutover.
+          variable: failback_group
+          type: multiplechoice
+          required: true
+          default: ''
+          min: 0
+          max: 1024
+          choices: "{{ (failback_choices | unique | sort) if failback_choices | length > 0 else ['No eligible promoted groups — refresh after failover'] }}"
+- name: Read existing preparation survey
+  ansible.builtin.include_tasks: survey_api.yml
+  vars:
+    survey_path: "{{ failback_job_path }}survey_spec/"
+- name: Refuse to replace unrelated survey questions
+  ansible.builtin.assert:
+    that: survey_response.json.spec | default([]) | map(attribute='variable') | difference(['failback_group', 'recovery_target', 'failback_request_id']) | length == 0
+- name: Save the customer selection survey
+  ansible.builtin.include_tasks: survey_api.yml
+  vars:
+    survey_path: "{{ failback_job_path }}survey_spec/"
+    survey_method: POST
+    survey_body: "{{ failback_choice_survey }}"
+- name: Enable the survey and serialize preparation launches
+  ansible.builtin.include_tasks: survey_api.yml
+  vars:
+    survey_path: "{{ failback_job_path }}"
+    survey_method: PATCH
+    survey_body: "{{ {'survey_enabled': true, 'allow_simultaneous': false} }}"
+- name: Report discovered groups
+  ansible.builtin.debug:
+    msg:
+      choices: "{{ failback_choices }}"
+      next: Open a fresh Prepare DR Failback Source launch form. Select a group; no request ID is required. No cluster resources were changed by this refresh.

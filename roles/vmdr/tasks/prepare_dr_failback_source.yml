@@ -1,9 +1,6 @@
 ---
-- name: Require a stable failback preparation identifier
-  ansible.builtin.assert:
-    that:
-      - failback_request_id | default('') is match('^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$')
-    fail_msg: Set failback_request_id to a stable name such as poc-failback-001; reuse it on retry.
+- name: Resolve automatic retry identity
+  ansible.builtin.include_tasks: failback_identity.yml
 - name: Initialize current DR membership from the enrolled catalog
   ansible.builtin.set_fact:
     current_dr_members: []
@@ -41,7 +38,7 @@
     failback_rebuilt_filter:
       resourceSelectionCriteria: Include
       resourceMatchers: "{{ resource_matchers | sort(attribute='kind') }}"
-    failback_baseline_name: "{{ failback_dr_application_name[:32] }}-fb-{{ (failback_request_id | hash('sha256'))[:12] }}"
+    failback_baseline_name: "{{ failback_dr_application_name[:32] }}-fb-{{ (failback_effective_request_id | hash('sha256'))[:12] }}"
 - name: Validate narrow rebuilt VM and namespace selection
   ansible.builtin.include_tasks: validate_failback_filter.yml
 - name: Require all discovered cluster resource types in the immutable application scope

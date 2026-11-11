@@ -1,0 +1,44 @@
+---
+- hosts: localhost
+  gather_facts: false
+  vars:
+    failback_amr_query:
+      resources:
+        - metadata:
+            uid: amr-one
+            annotations: {vmdr.aap/request-id: promotion-one}
+          status:
+            conditions:
+              - {type: Promoted, status: 'True', lastTransitionTime: '2026-11-11T07:01:46Z'}
+  tasks:
+    - ansible.builtin.include_role:
+        name: vmdr
+        tasks_from: failback_identity
+    - ansible.builtin.set_fact:
+        first_id: "{{ failback_effective_request_id }}"
+    - ansible.builtin.include_role:
+        name: vmdr
+        tasks_from: failback_identity
+    - ansible.builtin.assert:
+        that: failback_effective_request_id == first_id
+    - ansible.builtin.include_role:
+        name: vmdr
+        tasks_from: failback_identity
+      vars:
+        failback_amr_query:
+          resources:
+            - metadata:
+                uid: amr-one
+                annotations: {vmdr.aap/request-id: promotion-two}
+              status:
+                conditions:
+                  - {type: Promoted, status: 'True', lastTransitionTime: '2026-11-12T07:01:46Z'}
+    - ansible.builtin.assert:
+        that: failback_effective_request_id != first_id
+    - ansible.builtin.include_role:
+        name: vmdr
+        tasks_from: resolve_failback_selection
+      vars:
+        failback_group: 'demo (my-vm/centos-vm) | vmdr/demo-mirror'
+    - ansible.builtin.assert:
+        that: recovery_target == 'vmdr/demo-mirror'

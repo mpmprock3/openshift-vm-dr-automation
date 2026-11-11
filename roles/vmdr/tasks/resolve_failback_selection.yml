@@ -1,0 +1,10 @@
+---
+- name: Resolve the protected group selected in the customer survey
+  ansible.builtin.set_fact:
+    recovery_target: "{{ failback_group.split(' | ') | last }}"
+  when: failback_group | default('') | length > 0
+- name: Reject conflicting manually pinned targets
+  ansible.builtin.assert:
+    that: recovery_target == (failback_group.split(' | ') | last)
+    fail_msg: Remove the old recovery_target extra variable from this template; the survey now selects the group.
+  when: failback_group | default('') | length > 0
