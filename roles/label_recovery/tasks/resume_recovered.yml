@@ -1,0 +1,66 @@
+---
+- name: Require the selected group to match this active catalog
+  ansible.builtin.assert:
+    that:
+      - lr_plan.source_namespace == label_recovery_target.split('/')[0]
+      - lr_plan.application == label_recovery_target.split('/')[1]
+- name: Find durable successful cutover receipts
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ConfigMap
+    namespace: '{{ lr_plan.source_namespace }}'
+    label_selectors:
+      - app.kubernetes.io/component=label-recovery-receipt
+      - 'app.kubernetes.io/managed-by={{ recovery_owner }}'
+  register: lr_receipts
+- ansible.builtin.set_fact:
+    lr_matching_receipts: []
+- ansible.builtin.set_fact:
+    lr_matching_receipts: '{{ lr_matching_receipts + [item] }}'
+  vars:
+    receipt_plan: '{{ item.data["plan.json"] | from_json }}'
+  loop: '{{ lr_receipts.resources }}'
+  when:
+    - receipt_plan.application == lr_plan.application
+    - receipt_plan.destination_api == lr_plan.source_api
+    - receipt_plan.destination_namespace == lr_plan.source_namespace
+    - receipt_plan.source_api == lr_plan.destination_api
+    - receipt_plan.source_namespace == lr_plan.destination_namespace
+- ansible.builtin.assert:
+    that: lr_matching_receipts | length > 0
+    fail_msg: This site is marked active but no matching recovery receipt exists. No new cutover is allowed.
+- ansible.builtin.set_fact:
+    lr_resume_receipt: '{{ lr_matching_receipts | sort(attribute="metadata.creationTimestamp") | last }}'
+- name: Verify the recovered VMs still have the enrolled identities
+  kubernetes.core.k8s_info:
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    namespace: '{{ lr_plan.source_namespace }}'
+    name: '{{ item.name }}'
+  loop: '{{ lr_plan.vms }}'
+  register: lr_resume_vm
+  failed_when: lr_resume_vm.resources | length != 1 or lr_resume_vm.resources[0].metadata.uid != item.uid or not (lr_resume_vm.resources[0].status.ready | default(false))
+  no_log: true
+- name: Verify current active disk identities
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: PersistentVolumeClaim
+    namespace: '{{ lr_plan.source_namespace }}'
+    label_selectors:
+      - '{{ lr_plan.label_key }}={{ lr_plan.application }}'
+  register: lr_resume_disks
+- ansible.builtin.assert:
+    that:
+      - lr_resume_disks.resources | map(attribute='metadata.uid') | sort == lr_plan.pvc_uids | sort
+      - lr_resume_disks.resources | map(attribute='status.phase') | unique | list == ['Bound']
+- name: Resume only reprotection without shutting down or promoting again
+  ansible.builtin.set_stats:
+    per_host: false
+    aggregate: false
+    data:
+      label_cutover_recovered: true
+      label_cutover_plan: '{{ lr_resume_receipt.data["plan.json"] | from_json }}'
+      label_final_snapshot: '{{ lr_resume_receipt.data["snapshot.json"] | from_json }}'
+      label_reprotection_plan: "{{ lr_plan | combine({'retired_application_uid': (lr_resume_receipt.data['plan.json'] | from_json).application_uid, 'retired_pvc_uids': (lr_resume_receipt.data['plan.json'] | from_json).pvc_uids}) }}"
+- ansible.builtin.debug:
+    msg: 'This group is already active here and its VM/PVC identities match the recovery catalog. Shutdown and promotion will be skipped; DR protection will be checked or completed.'

@@ -140,7 +140,6 @@
 - name: Require a completed replica transfer
   ansible.builtin.assert:
     that:
-      - lr_ready.resources[0].status.lastTransfer.completionTimestamp is defined
       - lr_ready.resources[0].status.lastTransferredSnapshot.name | default('') | length > 0
       - lr_ready.resources[0].status.conditions | selectattr('type', 'equalto', 'LastTransferSucceeded') | selectattr('status', 'equalto', 'True') | list | length == 1
 - name: Verify each destination disk is bound

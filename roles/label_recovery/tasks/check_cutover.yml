@@ -15,71 +15,14 @@
       - lr_plan_record.resources[0].metadata.labels['app.kubernetes.io/component'] == 'label-recovery-plan'
 - ansible.builtin.set_fact:
     lr_plan: '{{ lr_plan_record.resources[0].data["plan.json"] | from_json }}'
-- ansible.builtin.assert:
+- name: Require an enrolled plan on one of its recorded sites
+  ansible.builtin.assert:
     that:
       - lr_plan.schema_version == 2
-      - lr_plan.destination_api == lookup('env', 'K8S_AUTH_HOST') | regex_replace('/$', '')
-      - lr_plan.destination_namespace == label_recovery_target.split('/')[0]
-      - lr_plan.application == label_recovery_target.split('/')[1]
-- name: Read replica
-  kubernetes.core.k8s_info:
-    api_version: '{{ recovery_api_version }}'
-    kind: AppMirrorRelationship
-    namespace: '{{ lr_plan.destination_namespace }}'
-    name: '{{ lr_plan.application }}-mirror'
-  register: lr_cutover_amr
-- name: Require the enrolled replica and a successful transfer
-  ansible.builtin.assert:
-    that:
-      - lr_cutover_amr.resources | length == 1
-      - lr_cutover_amr.resources[0].spec.sourceApplicationUID == lr_plan.application_uid
-      - lr_cutover_amr.resources[0].status.state in ['Established', 'Promoted']
-      - lr_cutover_amr.resources[0].status.error | default('', true) | length == 0
-      - lr_cutover_amr.resources[0].status.lastTransferredSnapshot.name | default('') | length > 0
-      - lr_cutover_amr.resources[0].status.conditions | selectattr('type', 'equalto', 'LastTransferSucceeded') | selectattr('status', 'equalto', 'True') | list | length == 1
-- name: Verify target disk set
-  kubernetes.core.k8s_info:
-    api_version: v1
-    kind: PersistentVolumeClaim
-    namespace: '{{ lr_plan.destination_namespace }}'
-  register: lr_target_disks
-- ansible.builtin.assert:
-    that:
-      - lr_target_disks.resources | map(attribute='metadata.name') | sort == lr_plan.pvcs | sort
-      - lr_target_disks.resources | map(attribute='status.phase') | unique | list == ['Bound']
-- name: Read destination compute and virtualization settings
-  kubernetes.core.k8s_info:
-    api_version: v1
-    kind: Node
-  register: lr_nodes
-- kubernetes.core.k8s_info:
-    api_version: kubevirt.io/v1
-    kind: KubeVirt
-    namespace: openshift-cnv
-  register: lr_kubevirt
-- name: Require explicit opt-in for software emulation
-  ansible.builtin.assert:
-    that:
-      - lr_kubevirt.resources | length == 1
-      - not (lr_kubevirt.resources[0].spec.configuration.developerConfiguration.useEmulation | default(false)) or recovery_allow_emulation | default(false) | bool
-- ansible.builtin.set_fact:
-    lr_compute_candidates: []
-- ansible.builtin.set_fact:
-    lr_compute_candidates: '{{ lr_compute_candidates + [item.metadata.name] }}'
-  loop: '{{ lr_nodes.resources }}'
-  when:
-    - not item.spec.unschedulable | default(false)
-    - item.status.conditions | selectattr('type', 'equalto', 'Ready') | selectattr('status', 'equalto', 'True') | list | length == 1
-    - item.status.allocatable['devices.kubevirt.io/kvm'] | default('0') | int > 0 or (recovery_allow_emulation | default(false) | bool and lr_kubevirt.resources[0].spec.configuration.developerConfiguration.useEmulation | default(false))
-  no_log: true
-- ansible.builtin.assert:
-    that: lr_compute_candidates | length > 0
-- name: Produce a deterministic retry identity from the actual mirror UID
-  ansible.builtin.set_fact:
-    label_cutover_plan: "{{ lr_plan | combine({'mirror_uid': lr_cutover_amr.resources[0].metadata.uid, 'final_name': 'final-' ~ lr_cutover_amr.resources[0].metadata.uid, 'checked_at': now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ')}) }}"
-- name: Pass checked plan to source shutdown stage
-  ansible.builtin.set_stats:
-    per_host: false
-    aggregate: false
-    data:
-      label_cutover_plan: '{{ label_cutover_plan }}'
+      - (lookup('env', 'K8S_AUTH_HOST') | regex_replace('/$', '')) in [lr_plan.source_api, lr_plan.destination_api]
+- name: Check the established replica before a new cutover
+  ansible.builtin.include_tasks: check_replica.yml
+  when: lr_plan.destination_api == lookup('env', 'K8S_AUTH_HOST') | regex_replace('/$', '')
+- name: Resume verification after this site already became active
+  ansible.builtin.include_tasks: resume_recovered.yml
+  when: lr_plan.source_api == lookup('env', 'K8S_AUTH_HOST') | regex_replace('/$', '')

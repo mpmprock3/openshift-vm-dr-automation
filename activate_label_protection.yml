@@ -7,3 +7,4 @@
     - ansible.builtin.include_role:
         name: label_recovery
         tasks_from: activate_protection
+      when: not label_cutover_recovered | default(false)

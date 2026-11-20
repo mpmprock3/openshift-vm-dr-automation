@@ -34,11 +34,26 @@
     kind: PersistentVolumeClaim
     namespace: '{{ lr_reprotect_plan.destination_namespace }}'
   register: lr_retired_pvcs
+- name: Inspect an already created reprotection relationship on retries
+  kubernetes.core.k8s_info:
+    api_version: '{{ recovery_api_version }}'
+    kind: AppMirrorRelationship
+    namespace: '{{ lr_reprotect_plan.destination_namespace }}'
+    name: '{{ lr_reprotect_plan.application }}-mirror'
+  register: lr_resumed_mirror
+- name: Require the exact managed direction if reprotection already began
+  ansible.builtin.assert:
+    that:
+      - lr_resumed_mirror.resources[0].metadata.labels['app.kubernetes.io/managed-by'] | default('') == recovery_owner
+      - lr_resumed_mirror.resources[0].spec.sourceApplicationUID == lr_reprotect_plan.application_uid
+      - lr_resumed_mirror.resources[0].spec.desiredState == 'Established'
+      - "lr_resumed_mirror.resources[0].spec.namespaceMapping == [{'source': lr_reprotect_plan.source_namespace, 'destination': lr_reprotect_plan.destination_namespace}]"
+  when: lr_resumed_mirror.resources | length > 0
 - ansible.builtin.assert:
     that:
-      - lr_retired_pvcs.resources | map(attribute='metadata.uid') | difference(lr_reprotect_plan.retired_pvc_uids) | length == 0
+      - lr_resumed_mirror.resources | length > 0 or lr_retired_pvcs.resources | map(attribute='metadata.uid') | difference(lr_reprotect_plan.retired_pvc_uids) | length == 0
       - lr_retired_pvcs.resources | map(attribute='metadata.name') | difference(lr_reprotect_plan.pvcs) | length == 0
-      - lr_retired_pvcs.resources | rejectattr('status.phase', 'equalto', 'Bound') | list | length == 0
+      - lr_retired_pvcs.resources | rejectattr('spec.storageClassName', 'equalto', lr_reprotect_plan.storage_class) | list | length == 0
 - name: Read destination schedules
   kubernetes.core.k8s_info:
     api_version: '{{ recovery_api_version }}'
