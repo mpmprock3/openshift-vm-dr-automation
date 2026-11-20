@@ -1,0 +1,10 @@
+---
+- hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - ansible.builtin.include_tasks: wait_error_case.yml
+      loop:
+        - {name: status-error, expected_error: true}
+        - {name: condition-error, expected_error: true}
+        - {name: healthy, expected_error: false}

@@ -12,10 +12,16 @@
      (wait_kind == 'Application' and
       readiness.resources[0].status.conditions | default([]) |
       selectattr('type', 'equalto', 'Ready') | selectattr('status', 'equalto', 'True') | list | length > 0) or
-     readiness.resources[0].status.state | default('') in ['Failed', 'Error', 'Invalid'])
+     readiness.resources[0].status.state | default('') in ['Failed', 'Error', 'Invalid'] or
+     readiness.resources[0].status.error | default('', true) | length > 0 or
+     readiness.resources[0].status.conditions | default([]) | selectattr('reason', 'defined') |
+     selectattr('reason', 'equalto', 'Error') | selectattr('status', 'equalto', 'False') | list | length > 0)
   retries: "{{ ((protect_wait_seconds | int) / (protect_poll_seconds | int)) | round(0, 'ceil') | int }}"
   delay: "{{ protect_poll_seconds }}"
-- name: Reject a failed resource state
+- name: Surface controller errors even when the high-level state remains in progress
   ansible.builtin.assert:
-    that: readiness.resources[0].status.state | default('') not in ['Failed', 'Error', 'Invalid']
-    fail_msg: "Resource reached a failed state: {{ readiness.resources[0].status | default({}) }}"
+    that:
+      - readiness.resources[0].status.state | default('') not in ['Failed', 'Error', 'Invalid']
+      - readiness.resources[0].status.error | default('', true) | length == 0
+      - readiness.resources[0].status.conditions | default([]) | selectattr('reason', 'defined') | selectattr('reason', 'equalto', 'Error') | selectattr('status', 'equalto', 'False') | list | length == 0
+    fail_msg: "Controller reported an error; no automatic reset or deletion was performed: {{ readiness.resources[0].status | default({}) }}"

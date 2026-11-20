@@ -83,3 +83,9 @@ For standalone preparation, run **Refresh Failback Choices**, then **Prepare DR 
 ## Local automated verification
 
 See [simulation instructions](../tests/failback_simulation/README.md). Test doubles model API responses and selected controller transitions only; they are never used by production jobs. Tests cover native workflow control flow, exact-point promotion, failed shutdown rejection, recovery after the reverse AMR has been removed, completed-operation retry, and unchanged unrelated workload metadata. Additional assertion tests reject mismatched or stale promotion evidence.
+
+## Existing destination Application cannot be reused
+
+If an AMR reports `Existing app definition is different ... cannot reuse the application`, reverse replication is blocked before transfer starts. A high-level `Establishing` state does not mean data is moving. Compare the current Application CRs on both clusters and the AMR's namespace mapping; do not assume a specific field is responsible without inspecting them. Existing destination Application reuse is controller-dependent and must be validated in the live environment.
+
+The poller now exits on `status.error` or a condition with `reason: Error` and `status: False`, even while the resource remains `Establishing`. This surfaces the cause promptly; it does not repair the definition or cancel controller reconciliation. Some controller errors can be transient: correct or recheck the underlying condition before retrying. Do not delete Applications/PVCs or perform ordinary resync merely to clear the error.

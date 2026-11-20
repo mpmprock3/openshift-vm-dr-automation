@@ -1,0 +1,21 @@
+---
+- ansible.builtin.set_fact:
+    observed_error: false
+- block:
+    - ansible.builtin.include_role:
+        name: vmdr
+        tasks_from: wait
+      vars:
+        wait_kind: AppMirrorRelationship
+        wait_namespace: default
+        wait_name: "{{ item.name }}"
+        wait_state: Established
+        protect_wait_seconds: 1
+        protect_poll_seconds: 1
+  rescue:
+    - ansible.builtin.set_fact:
+        observed_error: true
+- ansible.builtin.assert:
+    that:
+      - observed_error == item.expected_error
+      - readiness.attempts | int == 1
