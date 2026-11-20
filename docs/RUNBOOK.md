@@ -1,20 +1,30 @@
-# One-pass rebuild runbook: OpenShift Virtualization DR POC
+# One-pass rebuild runbook: OpenShift Virtualization DR POC (PROD → DR)
 
 **Use this file when you have new clusters and want to rebuild everything in one go.** It lists the steps in the order that actually works and calls out every mistake from the first lab. It replaces the original chat history. For background and detailed explanations, see [REBUILD.md](REBUILD.md) and the [README](../README.md).
 
+In this runbook the two clusters are called **PROD** (the source site, where the VMs normally run) and **DR** (the recovery site). They match the kubeconfig contexts `PROD` and `DR`:
+
+```bash
+oc config use-context PROD
+oc config use-context DR
+```
+
 > Rules for the whole runbook
 >
-> 1. **Every `oc` command uses `--context=dc` or `--context=dr`.** In the first lab, many failures came from running a command on the wrong cluster. Don't rely on a plain `oc` with whatever login is active.
-> 2. **Don't paste lines that start with `#`** into zsh. They just print `command not found: #`, which is harmless but noisy. The code blocks below contain no comment lines.
-> 3. **Never put tokens, passwords, kubeconfigs, or the AAP manifest in Git, chat, or job extra variables.**
-> 4. Each stage ends with a **✅ Checkpoint**. Don't continue until it passes.
+> 1. **Every `oc` command uses `--context=PROD` or `--context=DR`.** Context names are case-sensitive. In the first lab, many failures came from running a command on the wrong cluster. Don't rely on a plain `oc` with whatever `use-context` happens to be active.
+> 2. **Run every command from the repository root** (`openshift-vm-dr-automation/`, see step 1). The `bootstrap/` and `rbac_*.yml` paths are relative.
+> 3. **Don't paste lines that start with `#`** into zsh. They just print `command not found: #`, which is harmless but noisy. The code blocks below contain no comment lines.
+> 4. **Never put tokens, passwords, kubeconfigs, or the AAP manifest in Git, chat, or job extra variables.**
+> 5. Each stage ends with a **✅ Checkpoint**. Don't continue until it passes.
+
+> **Naming note.** The AAP job templates `Configure DC Protection`, `Establish DR Replication` and `Refresh VM Choices` keep their original names, because `configure_failover_workflow.yml` looks them up by name. In those names, "DC" means the **PROD** cluster. Everything else in this runbook says PROD.
 
 ---
 
 ## 0. What you are building
 
 ```text
-DC cluster (ROSA/OpenShift 4.22)             DR cluster (ROSA/OpenShift 4.22)
+PROD cluster (ROSA/OpenShift 4.22)           DR cluster (ROSA/OpenShift 4.22)
  ├─ OpenShift Virtualization                  ├─ OpenShift Virtualization (+ a KVM-capable node!)
  ├─ Trident + Trident Protect 26.02           ├─ Trident + Trident Protect 26.02
  ├─ AppVault trident-protect/lab-vault        ├─ AppVault trident-protect/lab-vault (same bucket)
@@ -27,60 +37,91 @@ In AAP you build two **operational** workflows plus one setup job:
 
 ```text
 Enable DR Protection   (Workflow; you build it by hand in step 8)
-  Validate Protection Selection → On success → Configure DC Protection → On success → Establish DR Replication
+  Validate Protection Selection → On success → Configure DC Protection (runs on PROD) → On success → Establish DR Replication
 
 Configure Failover Workflow   (standalone Job Template; run it ONCE, it builds the next workflow for you)
 
 Fail Over to DR   (Workflow; created automatically)
-  Prepare DR Failover → Isolate Source VMs → Promote DR Replica → Verify DR Recovery
+  Prepare DR Failover → Isolate Source VMs (on PROD) → Promote DR Replica → Verify DR Recovery
 ```
 
 **Status at the end of the first lab.** Steps 1–11 worked on live clusters: AMR `Established` and DR PVC `Bound`. Step 12 reached the failover launch form, but **a live failover was never run**. Steps 12–13 are therefore the first real test. Same-IP behaviour and failback have not been verified, and failback is not implemented.
 
 ---
 
-## 1. Worksheet and cluster checks (≈10 min)
+## 1. Repository, contexts and cluster checks (≈10 min)
+
+### 1.1 Clone the repository
+
+The step 4 manifests (`bootstrap/automation-token-secret.yml`) exist only on the `docs/one-pass-runbook` branch, so clone that branch:
+
+```bash
+git clone -b docs/one-pass-runbook https://github.com/mpmprock3/openshift-vm-dr-automation.git
+cd openshift-vm-dr-automation
+ls bootstrap rbac_poc_cluster_admin.yml
+```
+
+You should see `aap-instance.yml`, `automation-serviceaccount.yml`, `automation-token-secret.yml`, `multiclusterhub.yml` and `rbac_poc_cluster_admin.yml`. If you already have a clone, run `git fetch && git checkout docs/one-pass-runbook && git pull` instead.
+
+### 1.2 Confirm the PROD and DR contexts
+
+```bash
+oc config get-contexts PROD DR
+oc --context=PROD whoami --show-server
+oc --context=DR whoami --show-server
+oc --context=PROD whoami
+oc --context=DR whoami
+```
+
+The two URLs **must be different**, and both `whoami` calls must succeed (not `Unauthorized`).
+
+If a context is missing or its login token has expired, log in again and rename the new context. `rename-context` fails if the target name already exists, so delete the old one first:
+
+```bash
+oc login --token=<PROD token> --server=<PROD API URL>
+oc config delete-context PROD
+oc config rename-context "$(oc config current-context)" PROD
+```
+
+```bash
+oc login --token=<DR token> --server=<DR API URL>
+oc config delete-context DR
+oc config rename-context "$(oc config current-context)" DR
+```
+
+(Get the token from the console → user menu → **Copy login command**. If `delete-context` says the context doesn't exist, that's fine.)
+
+### 1.3 Worksheet
 
 Fill this in privately (not in Git):
 
 | Item | Value |
 |---|---|
-| DC API URL | `oc --context=dc whoami --show-server` |
-| DR API URL | `oc --context=dr whoami --show-server` |
+| PROD API URL | `oc --context=PROD whoami --show-server` |
+| DR API URL | `oc --context=DR whoami --show-server` |
 | AAP gateway URL | from step 3 |
 | Source VM storage class | `storage-class-iscsi` (NetApp/Trident) |
 | AppVault | `trident-protect/lab-vault` |
 | First protection plan / DR namespace | `demo-vm-plan` / `vmdr` |
 
-Log in to both clusters (console → user menu → **Copy login command**) and give the contexts fixed names:
+### 1.4 Cluster checks
 
 ```bash
-oc login --token=<DC token> --server=<DC API URL>
-oc config rename-context "$(oc config current-context)" dc
-oc login --token=<DR token> --server=<DR API URL>
-oc config rename-context "$(oc config current-context)" dr
-oc --context=dc whoami --show-server
-oc --context=dr whoami --show-server
-```
-
-The two URLs **must be different**. Then check what the lab gives you:
-
-```bash
-oc --context=dc get clusterversion
-oc --context=dr get clusterversion
-oc --context=dc get csv -n openshift-cnv
-oc --context=dr get csv -n openshift-cnv
-oc --context=dc get storageclass
-oc --context=dr get storageclass
-oc --context=dc get volumesnapshotclass
-oc --context=dr get volumesnapshotclass
-oc --context=dc get deploy -n trident-protect -o custom-columns='NAME:.metadata.name,IMAGE:.spec.template.spec.containers[*].image'
-oc --context=dr get deploy -n trident-protect -o custom-columns='NAME:.metadata.name,IMAGE:.spec.template.spec.containers[*].image'
-oc --context=dc get appvaults.protect.trident.netapp.io -n trident-protect
-oc --context=dr get appvaults.protect.trident.netapp.io -n trident-protect
-oc --context=dc get nodes -o custom-columns='NAME:.metadata.name,KVM:.status.allocatable.devices\.kubevirt\.io/kvm'
-oc --context=dr get nodes -o custom-columns='NAME:.metadata.name,KVM:.status.allocatable.devices\.kubevirt\.io/kvm'
-oc --context=dr adm top nodes
+oc --context=PROD get clusterversion
+oc --context=DR get clusterversion
+oc --context=PROD get csv -n openshift-cnv
+oc --context=DR get csv -n openshift-cnv
+oc --context=PROD get storageclass
+oc --context=DR get storageclass
+oc --context=PROD get volumesnapshotclass
+oc --context=DR get volumesnapshotclass
+oc --context=PROD get deploy -n trident-protect -o custom-columns='NAME:.metadata.name,IMAGE:.spec.template.spec.containers[*].image'
+oc --context=DR get deploy -n trident-protect -o custom-columns='NAME:.metadata.name,IMAGE:.spec.template.spec.containers[*].image'
+oc --context=PROD get appvaults.protect.trident.netapp.io -n trident-protect
+oc --context=DR get appvaults.protect.trident.netapp.io -n trident-protect
+oc --context=PROD get nodes -o custom-columns='NAME:.metadata.name,KVM:.status.allocatable.devices\.kubevirt\.io/kvm'
+oc --context=DR get nodes -o custom-columns='NAME:.metadata.name,KVM:.status.allocatable.devices\.kubevirt\.io/kvm'
+oc --context=DR adm top nodes
 ```
 
 ✅ **Checkpoint**
@@ -90,25 +131,25 @@ oc --context=dr adm top nodes
 - `trident-protect-controller-manager` uses the image `netapp/controller:26.02.0` on both clusters.
 - `lab-vault` reports `Available` on both clusters and points to the same bucket.
 - **At least one DR node shows KVM > 0.** The failover job `Prepare DR Failover` refuses to run otherwise. In the first lab, every worker showed `0`. On ROSA this usually means you need a bare-metal machine pool for VMs. Fix it now, not on failover day.
-- DR has free memory for AAP (~6–8 GiB of requests) **plus** the recovered VMs. In the first lab DC was already ~80–90% reserved after ACM, so AAP went on DR.
+- DR has free memory for AAP (~6–8 GiB of requests) **plus** the recovered VMs. In the first lab PROD was already ~80–90% reserved after ACM, so AAP went on DR.
 
-If Trident or Trident Protect or the AppVault is missing (the first lab had them pre-provisioned), install them with the commands in [REBUILD.md §4](REBUILD.md#4-rebuild-netapp-prerequisites-on-both-clusters). ONTAP/SVM peering must already be in place; Ansible does not configure it.
+If Trident or Trident Protect or the AppVault is missing (the first lab had them pre-provisioned), install them with the commands in [REBUILD.md §4](REBUILD.md#4-rebuild-netapp-prerequisites-on-both-clusters) (that file still says `dc`/`dr`; use `PROD`/`DR`). ONTAP/SVM peering must already be in place; Ansible does not configure it.
 
 ---
 
-## 2. (Optional) ACM on DC for a single VM view (≈20 min)
+## 2. (Optional) ACM on PROD for a single VM view (≈20 min)
 
 Skip this if you don't need to show the ACM console. The DR automation doesn't use ACM.
 
-1. DC console → **Software Catalog/OperatorHub** → **Advanced Cluster Management for Kubernetes** → Install, channel **`release-2.17`**, namespace `open-cluster-management`. This is the regular ACM operator; there's no separate "ACM for Virtualization" operator to install.
+1. PROD console → **Software Catalog/OperatorHub** → **Advanced Cluster Management for Kubernetes** → Install, channel **`release-2.17`**, namespace `open-cluster-management`. This is the regular ACM operator; there's no separate "ACM for Virtualization" operator to install.
 2. When the operator shows `Succeeded`:
    ```bash
-   oc --context=dc apply -f bootstrap/multiclusterhub.yml
-   oc --context=dc get mch -n open-cluster-management -w
+   oc --context=PROD apply -f bootstrap/multiclusterhub.yml
+   oc --context=PROD get mch -n open-cluster-management -w
    ```
-3. When it shows `Running`: console → **All Clusters → Infrastructure → Clusters → Import cluster**. Name it `dr-virt` and choose **Run import commands manually**. Copy the generated command and run it **against DR** (`oc --context=dr ...`, or after confirming `oc whoami --show-server` shows the DR URL). Keep the command private.
+3. When it shows `Running`: console → **All Clusters → Infrastructure → Clusters → Import cluster**. Name it `dr-virt` and choose **Run import commands manually**. Copy the generated command and run it **against DR**: run `oc config use-context DR`, confirm `oc whoami --show-server` shows the DR URL, then paste the command. Keep the command private.
 
-✅ **Checkpoint:** `oc --context=dc get managedclusters` shows `local-cluster` (that's DC; don't import it again) and `dr-virt`, both `AVAILABLE=True`.
+✅ **Checkpoint:** `oc --context=PROD get managedclusters` shows `local-cluster` (that's PROD; don't import it again) and `dr-virt`, both `AVAILABLE=True`.
 
 ---
 
@@ -118,14 +159,14 @@ Skip this if you don't need to show the ACM console. The DR automation doesn't u
 2. **Software Catalog/OperatorHub** → **Ansible Automation Platform** (Red Hat) → Install: channel **`stable-2.6`**, namespace **`aap`**, scope: that namespace.
 3. When the operator shows `Succeeded`, create the platform instance. Use the parent `AnsibleAutomationPlatform` resource, **not** the separate *Automation Controller* tab:
    ```bash
-   oc --context=dr apply -f bootstrap/aap-instance.yml
-   oc --context=dr get pods,pvc -n aap -w
+   oc --context=DR apply -f bootstrap/aap-instance.yml
+   oc --context=DR get pods,pvc -n aap -w
    ```
 4. Wait until `aap-controller-task-*` shows 4/4, `aap-controller-web-*` 3/3, `aap-gateway-*` 2/2, `aap-postgres-15-0` 1/1, the PVC is `Bound`, and the `aap-controller-migration-*` job is `Completed`. The `*-operator-controller-manager` pods are only operators; the platform isn't ready until the controller task and web pods are up.
 5. Get the URL and the `admin` password:
    ```bash
-   oc --context=dr get route -n aap
-   oc --context=dr get secret aap-admin-password -n aap -o jsonpath='{.data.password}' | base64 -d; echo
+   oc --context=DR get route -n aap
+   oc --context=DR get secret aap-admin-password -n aap -o jsonpath='{.data.password}' | base64 -d; echo
    ```
    Open the **gateway** route (`https://aap-aap.apps.<dr-domain>`).
 6. **Subscription:** go to <https://access.redhat.com/management/subscription_allocations> → **New allocation** (type *Satellite 6.16*, name `aap-dr-poc`) → **Subscriptions → Add**. Pick an active *Ansible Automation Platform* trial (the one with the latest end date and a start date in the past), quantity `1` → **Export Manifest**. Upload the ZIP **without extracting it**. Being a Red Hat employee doesn't activate AAP by itself.
@@ -136,10 +177,11 @@ Skip this if you don't need to show the ACM console. The DR automation doesn't u
 
 ## 4. Give AAP access to both clusters (≈5 min, do it all at once)
 
-In the first lab this took four RBAC rounds: read-only, then per-namespace, then all-namespace, then cluster-admin. Only cluster-admin satisfied Trident Protect's admission webhook (`ClusterScopedResources access denied`). **Go straight to the final POC setup:**
+In the first lab this took four RBAC rounds: read-only, then per-namespace, then all-namespace, then cluster-admin. Only cluster-admin satisfied Trident Protect's admission webhook (`ClusterScopedResources access denied`). **Go straight to the final POC setup** (from the repository root):
 
 ```bash
-for c in dc dr; do
+for c in PROD DR; do
+  echo "=== $c ==="
   oc --context=$c apply -f bootstrap/automation-serviceaccount.yml
   oc --context=$c apply -f rbac_poc_cluster_admin.yml
   oc --context=$c apply -f bootstrap/automation-token-secret.yml
@@ -150,11 +192,14 @@ done
 Both clusters must print `yes`. Read each token **separately** and paste it straight into AAP (step 5):
 
 ```bash
-oc --context=dc -n aap-automation get secret aap-dr-automation-token -o jsonpath='{.data.token}' | base64 -d; echo
-oc --context=dr -n aap-automation get secret aap-dr-automation-token -o jsonpath='{.data.token}' | base64 -d; echo
+oc --context=PROD -n aap-automation get secret aap-dr-automation-token -o jsonpath='{.data.token}' | base64 -d; echo
 ```
 
-These tokens **don't expire**. That avoids the `HTTP 401 Unauthorized` errors from the first lab, where 8-hour tokens expired. They are cluster-admin tokens for a disposable lab only. If you'd rather use expiring tokens, run `oc --context=dc create token aap-dr-automation -n aap-automation --duration=24h` (and the same for DR), then update the AAP credential whenever you get a 401.
+```bash
+oc --context=DR -n aap-automation get secret aap-dr-automation-token -o jsonpath='{.data.token}' | base64 -d; echo
+```
+
+These tokens **don't expire**. That avoids the `HTTP 401 Unauthorized` errors from the first lab, where 8-hour tokens expired. They are cluster-admin tokens for a disposable lab only. If you'd rather use expiring tokens, run `oc --context=PROD create token aap-dr-automation -n aap-automation --duration=24h` (and the same with `--context=DR`), then update the AAP credential whenever you get a 401.
 
 Naming, so you don't get confused again: AAP *runs* in namespace `aap` on DR. The *target identity* is service account `aap-dr-automation` in namespace `aap-automation` on **each** cluster: two separate accounts with two separate tokens.
 
@@ -170,13 +215,17 @@ All of these go in the same **Organization** (for example `Default`). In the AAP
 
 | Name | API endpoint | Token |
 |---|---|---|
-| `OpenShift DC` | DC API URL (`https://api....:443`) | DC token |
-| `OpenShift DR` | DR API URL | DR token |
+| `OpenShift PROD` | PROD API URL (`oc --context=PROD whoami --show-server`) | PROD token from step 4 |
+| `OpenShift DR` | DR API URL (`oc --context=DR whoami --show-server`) | DR token from step 4 |
 
 ### 5.2 AAP API credential (used for survey refresh and failover setup)
 
 1. **Access Management → Users → `admin`** (not `aap_operator_service_account`) → **Tokens → Create token**. Leave *Application* blank, scope **Write**. Copy the token.
-2. **Credential Types → Create:** name **`AAP Survey API`**. Paste [aap_survey_credential_inputs.yml](../aap_survey_credential_inputs.yml) into *Input configuration* and [aap_survey_credential_injectors.yml](../aap_survey_credential_injectors.yml) into *Injector configuration*.
+2. **Credential Types → Create:** name **`AAP Survey API`**. Paste [aap_survey_credential_inputs.yml](../aap_survey_credential_inputs.yml) into *Input configuration* and [aap_survey_credential_injectors.yml](../aap_survey_credential_injectors.yml) into *Injector configuration*. Quick way to copy them from the clone:
+   ```bash
+   cat aap_survey_credential_inputs.yml
+   cat aap_survey_credential_injectors.yml
+   ```
 3. **Credentials → Create:** name **`AAP Survey Updater`**, type `AAP Survey API`. *AAP base URL* is the gateway URL **with no path and no `/api`**, for example `https://aap-aap.apps.<dr-domain>`. *Token* is the token from step 1.
 
 ### 5.3 Inventory
@@ -205,17 +254,17 @@ ansible_python_interpreter: "{{ ansible_playbook_python }}"
 
 ---
 
-## 6. Sample VMs on DC (≈10 min)
+## 6. Sample VMs on PROD (≈10 min)
 
 Customer VMs are created outside the automation. For the demo:
 
-1. DC console → **Virtualization → VirtualMachines → Create** → for example CentOS/RHEL template, project **`default`**, name **`dr-demo-vm`**. Under *Customize* → *Disks*, set the root disk storage class to **`storage-class-iscsi`**. Start it.
+1. PROD console → **Virtualization → VirtualMachines → Create** → for example CentOS/RHEL template, project **`default`**, name **`dr-demo-vm`**. Under *Customize* → *Disks*, set the root disk storage class to **`storage-class-iscsi`**. Start it.
 2. Create a second VM in another namespace, for example `test/test-vm`, also on `storage-class-iscsi`. It's for testing discovery.
 3. In the `dr-demo-vm` guest console, write test data for later, for example `date | sudo tee /root/dr-marker.txt; ip -br addr`. Record the IP and the time.
 
 ```bash
-oc --context=dc get vm,vmi -A
-oc --context=dc get pvc -A -o custom-columns='NS:.metadata.namespace,NAME:.metadata.name,STATUS:.status.phase,SC:.spec.storageClassName'
+oc --context=PROD get vm,vmi -A
+oc --context=PROD get pvc -A -o custom-columns='NS:.metadata.namespace,NAME:.metadata.name,STATUS:.status.phase,SC:.spec.storageClassName'
 ```
 
 ✅ **Checkpoint:** VMs are `Running` and disk PVCs are `Bound` on `storage-class-iscsi`. **Don't create anything in the DR namespace `vmdr`.**
@@ -224,25 +273,25 @@ oc --context=dc get pvc -A -o custom-columns='NS:.metadata.namespace,NAME:.metad
 
 ## 7. Job templates (≈15 min)
 
-**Templates → Create job template.** Every template uses: Job type **Run**, Inventory **`DR-Automation`**, Project **`VMDR automation`**, the default execution environment, **no** extra variables, **concurrent jobs off**, timeout **7200** on the three protection jobs. **Use these names exactly.** The failover setup looks up `Configure DC Protection`, `Establish DR Replication`, and `Refresh VM Choices` by name.
+**Templates → Create job template.** Every template uses: Job type **Run**, Inventory **`DR-Automation`**, Project **`VMDR automation`**, the default execution environment, **no** extra variables, **concurrent jobs off**, timeout **7200** on the three protection jobs. **Use these names exactly.** The failover setup looks up `Configure DC Protection`, `Establish DR Replication`, and `Refresh VM Choices` by name, so those three keep "DC" in their names even though they run against PROD.
 
 | Name | Playbook | Credential(s) |
 |---|---|---|
-| `Check Execution Environment DC` | `check_execution_environment.yml` | OpenShift DC |
+| `Check Execution Environment PROD` | `check_execution_environment.yml` | OpenShift PROD |
 | `Check Execution Environment DR` | `check_execution_environment.yml` | OpenShift DR |
-| `Precheck DC` | `precheck_access.yml` | OpenShift DC |
+| `Precheck PROD` | `precheck_access.yml` | OpenShift PROD |
 | `Precheck DR` | `precheck_access.yml` | OpenShift DR |
-| `Refresh VM Choices` | `refresh_vm_choices.yml` | OpenShift DC **+** AAP Survey Updater |
-| `Validate Protection Selection` | `validate_protection.yml` | OpenShift DC |
-| `Configure DC Protection` | `configure_dc_protection.yml` | OpenShift DC |
+| `Refresh VM Choices` | `refresh_vm_choices.yml` | OpenShift PROD **+** AAP Survey Updater |
+| `Validate Protection Selection` | `validate_protection.yml` | OpenShift PROD |
+| `Configure DC Protection` ⚠ keep this name | `configure_dc_protection.yml` | OpenShift PROD |
 | `Establish DR Replication` | `establish_dr_replication.yml` | OpenShift DR |
 
-**Never attach both OpenShift DC and OpenShift DR to the same job.** Launch the four check/precheck jobs now.
+**Never attach both OpenShift PROD and OpenShift DR to the same job.** Launch the four check/precheck jobs now.
 
 ✅ **Checkpoint**
 
 - The environment checks print `ansible-core 2.16.x` or newer and `Kubernetes module dependencies and read-only VM access work`. The first lab passed with 2.16.19, so no custom execution environment is needed.
-- `Precheck DC` shows your DC API URL, the DC VMs, and `lab-vault state=Available`. `Precheck DR` shows the DR URL, **0 VMs** (normal), and `lab-vault Available`.
+- `Precheck PROD` shows your PROD API URL, the PROD VMs, and `lab-vault state=Available`. `Precheck DR` shows the DR URL, **0 VMs** (normal), and `lab-vault Available`.
 
 ---
 
@@ -275,7 +324,7 @@ Open the workflow's **Survey** tab → **Create survey question** for each row. 
 
 ### 8.3 Fill the dropdowns from the cluster
 
-Launch **`Refresh VM Choices`**. Its output should list `vm_count` and your VMs (stopped VMs too). Then open a **new** launch form for `Enable DR Protection`; an already-open form doesn't refresh. The dropdowns don't query OpenShift live. Re-run *Refresh VM Choices* whenever VMs change. The refresh also clears earlier selections, so you have to pick them again.
+Launch **`Refresh VM Choices`**. Its output should list `vm_count` and your PROD VMs (stopped VMs too). Then open a **new** launch form for `Enable DR Protection`; an already-open form doesn't refresh. The dropdowns don't query OpenShift live. Re-run *Refresh VM Choices* whenever VMs change. The refresh also clears earlier selections, so you have to pick them again.
 
 ---
 
@@ -299,23 +348,28 @@ Rules that validation enforces (these caused the first lab's survey failures):
 - VMs from **several** source namespaces → use `Keep source namespace names`. A custom destination supports only one source namespace.
 - The interval must be **≥ 5**. A 2-minute schedule isn't supported for asynchronous SnapMirror on FlexVol volumes, so this POC can't demonstrate a 2-minute RPO.
 
-What happens: **Validate** (read-only) → **Configure DC Protection** creates Application `demo-vm-plan-<hash>`, an initial Snapshot, and a 5-minute Schedule in `default` on DC → **Establish DR Replication** creates namespace `vmdr` and an AppMirrorRelationship (AMR) on DR, waits for `Established`, and saves a recovery catalog ConfigMap `<AMR>-plan`.
+What happens: **Validate** (read-only) → **Configure DC Protection** creates Application `demo-vm-plan-<hash>`, an initial Snapshot, and a 5-minute Schedule in `default` on **PROD** → **Establish DR Replication** creates namespace `vmdr` and an AppMirrorRelationship (AMR) on DR, waits for `Established`, and saves a recovery catalog ConfigMap `<AMR>-plan`.
 
 Hundreds of `skipping` lines in the DR job are normal: polling stops once replication is established. Look for `failed=0` in the play recap. In the first lab the DR job took about 13 minutes for a 30 GiB disk.
 
 ✅ **Checkpoint**
 
 ```bash
-oc --context=dc get applications.protect.trident.netapp.io,snapshots.protect.trident.netapp.io,schedules.protect.trident.netapp.io -n default
-oc --context=dr get appmirrorrelationships.protect.trident.netapp.io -n vmdr
-oc --context=dr get pvc -n vmdr
-oc --context=dr get configmap -n vmdr -l app.kubernetes.io/component=recovery-plan
+oc --context=PROD get applications.protect.trident.netapp.io,snapshots.protect.trident.netapp.io,schedules.protect.trident.netapp.io -n default
+oc --context=DR get appmirrorrelationships.protect.trident.netapp.io -n vmdr
+oc --context=DR get pvc -n vmdr
+oc --context=DR get configmap -n vmdr -l app.kubernetes.io/component=recovery-plan
 ```
 
 - Application `Ready`, Snapshot `Completed`, Schedule present.
 - AMR `DESIRED STATE=Established`, `STATE=Established`, `ERROR` empty. **Write down the AMR name** (`demo-vm-plan-<hash>-mirror`). It will differ from the first lab's.
 - `vmdr/dr-demo-vm` PVC `Bound`, and the catalog ConfigMap exists.
-- Wait more than 10 minutes, then confirm the snapshot timestamp keeps advancing: `oc --context=dr get appmirrorrelationships.protect.trident.netapp.io <AMR> -n vmdr -o jsonpath='{.status.lastTransferredSnapshot}{"\n"}'`.
+- Wait more than 10 minutes, then confirm the snapshot timestamp keeps advancing. Capture the AMR name into a shell variable so you can paste the check as-is:
+
+```bash
+AMR=$(oc --context=DR get appmirrorrelationships.protect.trident.netapp.io -n vmdr -o jsonpath='{.items[0].metadata.name}'); echo "$AMR"
+oc --context=DR get appmirrorrelationships.protect.trident.netapp.io "$AMR" -n vmdr -o jsonpath='{.status.lastTransferredSnapshot}{"\n"}'
+```
 
 Replication now continues by itself; AAP doesn't need to run anything else. This step does **not** fail over or start a DR VM.
 
@@ -333,7 +387,7 @@ Replication now continues by itself; AAP doesn't need to run anything else. This
    | Playbook | `configure_failover_workflow.yml` |
    | Credential | **AAP Survey Updater only** (no OpenShift credential) |
 
-3. **Launch it directly.** It creates the **`Fail Over to DR`** workflow (with its survey and success-only links) and the templates `Prepare DR Failover`, `Isolate Source VMs`, `Promote DR Replica`, `Verify DR Recovery`, and `Refresh Recovery Choices`, copying credentials from your existing templates. It does **not** fail anything over. If it stops partway, sync the project and launch it again; it reuses what it already created. Don't delete those objects by hand.
+3. **Launch it directly.** It creates the **`Fail Over to DR`** workflow (with its survey and success-only links) and the templates `Prepare DR Failover`, `Isolate Source VMs`, `Promote DR Replica`, `Verify DR Recovery`, and `Refresh Recovery Choices`, copying credentials from your existing templates (`Isolate Source VMs` gets **OpenShift PROD** from `Configure DC Protection`; the others get **OpenShift DR**, and `Refresh Recovery Choices` also gets AAP Survey Updater). It does **not** fail anything over. If it stops partway, sync the project and launch it again; it reuses what it already created. Don't delete those objects by hand.
 4. Launch **`Refresh Recovery Choices`**.
 
 ✅ **Checkpoint:** a new **Fail Over to DR** launch form lists `vmdr/<your AMR name>` in the first dropdown.
@@ -342,7 +396,7 @@ Replication now continues by itself; AAP doesn't need to run anything else. This
 
 ## 11. First failover (⚠ never run live before; this is the real test)
 
-This **stops the DC VM** and activates DR. Before you start, record the time and confirm the marker file from step 6 has been replicated (wait at least one more 5-minute interval after writing it).
+This **stops the PROD VM** and activates DR. Before you start, record the time and confirm the marker file from step 6 has been replicated (wait at least one more 5-minute interval after writing it).
 
 Launch **Fail Over to DR** with:
 
@@ -356,25 +410,32 @@ Launch **Fail Over to DR** with:
 | External fencing completed? / reference | `No` / blank |
 | Optional application health URL | blank for now |
 
-What it does: checks the DR catalog, AMR, snapshot age, PVCs, and the KVM node → pauses the DC schedule, sets the DC VM to `runStrategy: Halted`, and waits for its VMI to disappear → sets the AMR to `desiredState: Promoted` → starts or verifies the DR VM and waits for `Running/Ready`. **It doesn't take a final snapshot**, so writes made after the last replicated snapshot are lost.
+What it does: checks the DR catalog, AMR, snapshot age, PVCs, and the KVM node → pauses the PROD schedule, sets the PROD VM to `runStrategy: Halted`, and waits for its VMI to disappear → sets the AMR to `desiredState: Promoted` → starts or verifies the DR VM and waits for `Running/Ready`. **It doesn't take a final snapshot**, so writes made after the last replicated snapshot are lost.
 
-If a stage fails, the later stages don't run. Fix the cause, then relaunch the **whole** workflow with the **same request ID**. The workflow never restarts the DC VM or reverts the promotion for you.
+If a stage fails, the later stages don't run. Fix the cause, then relaunch the **whole** workflow with the **same request ID**. The workflow never restarts the PROD VM or reverts the promotion for you.
 
 ---
 
 ## 12. Prove it
 
 ```bash
-oc --context=dc get vm,vmi -n default
-oc --context=dr get appmirrorrelationships.protect.trident.netapp.io -n vmdr
-oc --context=dr get vm,vmi,pvc -n vmdr
+oc --context=PROD get vm,vmi -n default
+oc --context=DR get appmirrorrelationships.protect.trident.netapp.io -n vmdr
+oc --context=DR get vm,vmi,pvc -n vmdr
+```
+
+Open the DR guest console (switch to the DR context first):
+
+```bash
+oc config use-context DR
+virtctl console dr-demo-vm -n vmdr
 ```
 
 | Test | Pass when |
 |---|---|
-| One active site | DC VMI gone; DR VMI `Running`/Ready |
+| One active site | PROD VMI gone; DR VMI `Running`/Ready |
 | Storage | AMR `Promoted`; DR PVCs `Bound` |
-| Data | `/root/dr-marker.txt` exists in the DR guest (`virtctl console dr-demo-vm -n vmdr`, or the console in the web UI) |
+| Data | `/root/dr-marker.txt` exists in the DR guest (`virtctl console` above, or the console in the web UI) |
 | Same IP | `ip -br addr` in the DR guest matches step 6 **and** an external client can reach it. This needs the same VLAN/subnet on DR (NAD + guest static IP or DHCP reservation); the automation doesn't configure networking |
 | Timing | Record failover start → VM usable |
 
@@ -386,7 +447,8 @@ oc --context=dr get vm,vmi,pvc -n vmdr
 
 | What went wrong last time | Do this instead |
 |---|---|
-| Commands run against DR when DC was intended (VM "not found") | Always use `--context=dc` / `--context=dr` |
+| Commands run against DR when PROD was intended (VM "not found") | Always use `--context=PROD` / `--context=DR` |
+| `bootstrap/automation-token-secret.yml` not found | Clone the `docs/one-pass-runbook` branch and run commands from the repo root (step 1.1) |
 | Created standalone *Automation Controller* / confused by operator pods | Create only the `AnsibleAutomationPlatform` CR (`bootstrap/aap-instance.yml`); wait for the controller task and web pods |
 | AAP asked for a subscription | Export a manifest from Subscription Allocations (step 3.6) |
 | Private GitHub repo needed a credential | The repo is public; leave *Source control credential* empty |
@@ -396,6 +458,7 @@ oc --context=dr get vm,vmi,pvc -n vmdr
 | `Choose one or both supported protection scopes` / `Select namespaces only when the namespace scope is enabled` | Scope ticks must match the lists you filled; **mapping mode must be single select** |
 | Workflow showed only 1 node | Click **Save** in the visualizer, reopen it, and confirm 3 nodes |
 | Launched child jobs directly | Always launch the **workflow** |
+| Renamed `Configure DC Protection` to "PROD" | Don't. `Configure Failover Workflow` looks it up by its exact name |
 | Application stuck with empty status ("Value is immutable") | Fixed in the code (commit `b674553`). If an old failed Application exists, use a **new plan name**; you can't patch immutable fields |
 | AMR `Establishing` with `TMR ... already exists` and a duplicate/unmapped PVC in the AppMirrorUpdate | Fixed in the code (commit `abbc6b3`, no broad PV selection). After any failed attempt, retry with a **new plan name and new destination namespace**. Never delete TMRs or finalizers |
 | `Check Execution Environment` demanded ansible-core 2.19 | Fixed; 2.16+ is enough |
@@ -409,19 +472,30 @@ oc --context=dr get vm,vmi,pvc -n vmdr
 ## 14. Quick diagnostics
 
 ```bash
-oc --context=dc logs -n trident-protect deploy/trident-protect-controller-manager --since=30m | tail -100
-oc --context=dr logs -n trident-protect deploy/trident-protect-controller-manager --since=30m | tail -100
-oc --context=dr describe appmirrorrelationships.protect.trident.netapp.io -n vmdr
-oc --context=dr get appmirrorupdates.protect.trident.netapp.io -n vmdr -o yaml
-oc --context=dr get tridentmirrorrelationships.trident.netapp.io -A
-oc --context=dr get events -n vmdr --sort-by=.metadata.creationTimestamp
+oc --context=PROD logs -n trident-protect deploy/trident-protect-controller-manager --since=30m | tail -100
+oc --context=DR logs -n trident-protect deploy/trident-protect-controller-manager --since=30m | tail -100
+oc --context=DR describe appmirrorrelationships.protect.trident.netapp.io -n vmdr
+oc --context=DR get appmirrorupdates.protect.trident.netapp.io -n vmdr -o yaml
+oc --context=DR get tridentmirrorrelationships.trident.netapp.io -A
+oc --context=DR get events -n vmdr --sort-by=.metadata.creationTimestamp
+```
+
+`tridentctl-protect` uses the current context, so switch to PROD first:
+
+```bash
+oc config use-context PROD
 tridentctl-protect get app -n default
 ```
 
-`tridentctl-protect` was available on the lab bastion. If the Ansible-created Application misbehaves, a baseline test is `tridentctl-protect create app tp-baseline --namespaces default -n default`. It should reach `Ready` within seconds. Delete it afterwards with `oc --context=dc delete applications.protect.trident.netapp.io tp-baseline -n default`. More symptoms are covered in [REBUILD.md §15](REBUILD.md#15-troubleshooting-from-the-original-lab).
+`tridentctl-protect` was available on the lab bastion. If the Ansible-created Application misbehaves, a baseline test is `tridentctl-protect create app tp-baseline --namespaces default -n default` (with PROD as the current context). It should reach `Ready` within seconds. Delete it afterwards with `oc --context=PROD delete applications.protect.trident.netapp.io tp-baseline -n default`. More symptoms are covered in [REBUILD.md §15](REBUILD.md#15-troubleshooting-from-the-original-lab).
 
 ## 15. Before the new cluster expires
 
 - Note the Git commit, survey answers, AMR name and results somewhere outside the cluster.
 - If you want to keep AAP, take an **AnsibleAutomationPlatformBackup** and copy it **off the cluster**. A backup PVC on the same cluster dies with it.
-- Delete the lab tokens (`oc -n aap-automation delete secret aap-dr-automation-token`) and the AAP personal token if the clusters will live on.
+- Delete the lab tokens and the AAP personal token if the clusters will live on:
+
+```bash
+oc --context=PROD -n aap-automation delete secret aap-dr-automation-token
+oc --context=DR -n aap-automation delete secret aap-dr-automation-token
+```
