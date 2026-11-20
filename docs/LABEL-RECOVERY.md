@@ -37,13 +37,26 @@ Use a separate AAP workflow with these success-only stages:
 | Protect the recovered active site | `activate_label_protection.yml` | Destination |
 | Re-establish replication toward the stopped source | `reprotect_label_source.yml` | Original source |
 
-The launch survey selects an enrolled `label_recovery_target` (`destination-namespace/application-name`). The job reads the saved plan; users do not type AMR UIDs or request IDs. The actual mirror UID generates the retry identity. Do not manually replace the mirror during cutover. If recovery fails after the promoted mirror has been released, inspect the cutover receipt and resume the failed stage with its saved workflow variables; do not blindly start another full cutover against the changed catalog.
+The launch survey selects an enrolled `label_recovery_target` (`destination-namespace/application-name`). The job reads the saved plan; users do not type AMR UIDs or request IDs. The actual mirror UID generates the retry identity. Do not manually replace the mirror during cutover. Once the recovered site's new protection catalog has been saved, relaunching the same selection verifies its receipt and current VM/PVC identities, skips shutdown and promotion, and checks or finishes reprotection. If failure occurs earlier, after mirror release but before that catalog is saved, inspect the receipt and resume the failed stage with its saved workflow variables.
 
 Create a separate **Refresh Label Recovery Choices** job using `refresh_label_recovery_choices.yml`, the destination Kubernetes credential and **AAP Survey Updater**. Its `recovery_workflow_name` defaults to `Fail Back to DC - Label Recovery`. It discovers eligible established replicas and updates the existing `label_recovery_target` survey question. Open a new launch form after refreshing. AAP surveys do not fetch the cluster on every dropdown click.
 
 For emulated POC compute only, set `recovery_allow_emulation: true`; this does not enable emulation. Source shutdown is blocked unless target compute, identity and disk checks pass. The final snapshot must contain exactly the source PVC UIDs. Promotion uses its archive basename as `promotedSnapshot` and checks restored VM readiness.
 
-After recovery, the fourth stage releases the promoted mirror and creates snapshots on the new active site. The fifth stage requires the original source VMs to be absent, verifies retained Application/PVC identities and the unchanged label scope, removes disabled schedules, and establishes replication in the opposite direction. It does not rewrite namespace/PV/pod resource filters. Never use ordinary resync to preserve writes made at the active recovery site. Application-level data verification remains necessary; VM readiness alone does not prove application consistency.
+After recovery, the fourth stage releases the promoted mirror and creates snapshots on the new active site. Baseline names change with the cutover/disk incarnation so a later cycle cannot accidentally reuse an old disk's baseline. The fifth stage requires the original source VMs to be absent, verifies the retained Application and any surviving PVC identities and the unchanged label scope, removes disabled schedules, and establishes replication in the opposite direction. Missing replica PVCs are recreated; unknown surviving PVCs are rejected. It does not rewrite namespace/PV/pod resource filters. Never use ordinary resync to preserve writes made at the active recovery site. Application-level data verification remains necessary; VM readiness alone does not prove application consistency.
+
+## Operating both directions in AAP
+
+Use separate workflows with the same five playbooks and opposite credential assignments:
+
+| Workflow | First/check credential | Shutdown credential | Promotion/protection credential | Reprotection credential |
+|---|---|---|---|---|
+| Fail Back to DC - Label Recovery | PROD | DR | PROD | DR |
+| Switch to DR - Label Recovery | DR | PROD | DR | PROD |
+
+The second workflow is a **planned switchover**: it requires source access for the final shutdown snapshot. It is not an unplanned disaster-failover workflow.
+
+For each direction, configure a refresh job with that workflow's first/check Kubernetes credential plus the AAP API credential. Set `recovery_workflow_name` to the corresponding workflow name. After a completed move, refreshing correctly removes the already-active group from the old direction and offers its established replica in the opposite direction. Refresh before opening a new form.
 
 ## Limits and validation
 
