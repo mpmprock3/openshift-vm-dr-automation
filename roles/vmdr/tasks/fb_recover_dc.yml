@@ -113,7 +113,6 @@
       snapshot_uid: "{{ fb_shutdown.snapshot_uid }}"
       promoted_snapshot: "{{ fb_shutdown.promoted_snapshot }}"
       dc_application_uid: "{{ fb_dc_app.resources[0].metadata.uid }}"
-      dc_filter: "{{ failback_rebuilt_filter }}"
       members: "{{ fb_catalog_members }}"
       baseline: "{{ fb_context.record_name }}-dc"
       schedule: "{{ fb_context.record_name }}-schedule"

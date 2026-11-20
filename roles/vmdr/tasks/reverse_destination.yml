@@ -57,17 +57,6 @@
   loop: "{{ failback_dc_schedules.resources | selectattr('spec.applicationRef', 'equalto', failback_plan.application_name) | list }}"
   loop_control:
     loop_var: reverse_schedule
-- name: Align the original DC Application so the reverse relationship can reuse it
-  ansible.builtin.include_tasks: fb_align_destination_app.yml
-  vars:
-    align_app_namespace: "{{ failback_plan.application_namespace }}"
-    align_app_name: "{{ failback_plan.application_name }}"
-    align_app_uid: "{{ failback_plan.application_uid }}"
-    align_namespaces: "{{ failback_plan.namespace_mapping.keys() | list }}"
-    align_filter: "{{ reverse_plan.source_filter }}"
-    align_record_name: "{{ reverse_plan.reverse_name }}-dc-filter"
-    align_amr_name: "{{ reverse_plan.reverse_name }}"
-    align_amr_source_uid: "{{ reverse_plan.assessment.dr_application_uid }}"
 - name: Pass destination validation
   ansible.builtin.set_stats:
     per_host: false

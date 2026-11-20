@@ -17,10 +17,4 @@ else:
     assert catalog['selected_vms'][0]['uid']=='recovered-dc-vm'
     journal=json.loads(next(x for x in s['dr'] if x['metadata'].get('labels',{}).get('app.kubernetes.io/component')=='failback-journal')['data']['state.json'])
     assert journal['phase']=='complete'
-    dcapp=next(x for x in s['dc'] if x['kind']=='Application')
-    drapp=next(x for x in s['dr'] if x['kind']=='Application')
-    assert drapp['spec']['resourceFilter']==dcapp['spec']['resourceFilter'], 'DR Application not aligned for forward reuse'
-if '--app-reuse-mismatch' in sys.argv:
-    saved=next(x for x in s['dc'] if x['kind']=='ConfigMap' and x['metadata']['name'].endswith('-dc-filter'))
-    assert 'pvc-dc-pvc' in saved['data']['original-filter.json'], 'original DC filter not kept'
 print('Failback state invariants passed')
