@@ -1,0 +1,9 @@
+---
+- name: Recover the VM from the final source recovery point
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - ansible.builtin.include_role:
+        name: label_recovery
+        tasks_from: promote

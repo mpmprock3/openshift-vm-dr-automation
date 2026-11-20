@@ -1,0 +1,73 @@
+---
+- ansible.builtin.set_fact:
+    lr_plan: '{{ label_cutover_plan }}'
+    lr_snapshot: '{{ label_final_snapshot }}'
+- name: Require the exact final recovery point and recent isolation check
+  ansible.builtin.assert:
+    that:
+      - lr_plan.destination_api == lookup('env', 'K8S_AUTH_HOST') | regex_replace('/$', '')
+      - lr_snapshot.mirror_uid == lr_plan.mirror_uid
+      - lr_snapshot.archive.startswith(lr_plan.application ~ '_' ~ lr_plan.application_uid ~ '/')
+      - (now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') | to_datetime('%Y-%m-%dT%H:%M:%SZ') - lr_snapshot.checked_at | to_datetime('%Y-%m-%dT%H:%M:%SZ')).total_seconds() < 600
+- name: Read destination replica immediately before promotion
+  kubernetes.core.k8s_info:
+    api_version: '{{ recovery_api_version }}'
+    kind: AppMirrorRelationship
+    namespace: '{{ lr_plan.destination_namespace }}'
+    name: '{{ lr_plan.application }}-mirror'
+  register: lr_promoting
+- name: Require matching replica identity and direction
+  ansible.builtin.assert:
+    that:
+      - lr_promoting.resources | length == 1
+      - lr_promoting.resources[0].metadata.uid == lr_plan.mirror_uid
+      - lr_promoting.resources[0].spec.sourceApplicationUID == lr_plan.application_uid
+      - lr_promoting.resources[0].spec.desiredState in ['Established', 'Promoted']
+      - lr_promoting.resources[0].spec.desiredState != 'Promoted' or lr_promoting.resources[0].spec.promotedSnapshot == lr_snapshot.archive.split('/')[-1]
+- name: Promote only the final completed source snapshot
+  kubernetes.core.k8s_json_patch:
+    api_version: '{{ recovery_api_version }}'
+    kind: AppMirrorRelationship
+    namespace: '{{ lr_plan.destination_namespace }}'
+    name: '{{ lr_plan.application }}-mirror'
+    patch:
+      - {op: test, path: /metadata/uid, value: '{{ lr_plan.mirror_uid }}'}
+      - {op: test, path: /metadata/resourceVersion, value: '{{ lr_promoting.resources[0].metadata.resourceVersion }}'}
+      - {op: test, path: /spec/desiredState, value: Established}
+      - {op: add, path: /spec/promotedSnapshot, value: "{{ lr_snapshot.archive.split('/')[-1] }}"}
+      - {op: replace, path: /spec/desiredState, value: Promoted}
+  when: lr_promoting.resources[0].spec.desiredState == 'Established'
+- ansible.builtin.include_tasks: wait.yml
+  vars:
+    lr_kind: AppMirrorRelationship
+    lr_name: '{{ lr_plan.application }}-mirror'
+    lr_namespace: '{{ lr_plan.destination_namespace }}'
+    lr_state: Promoted
+- name: Verify actual promotion completion
+  ansible.builtin.assert:
+    that:
+      - lr_ready.resources[0].metadata.uid == lr_plan.mirror_uid
+      - lr_ready.resources[0].spec.promotedSnapshot == lr_snapshot.archive.split('/')[-1]
+      - lr_ready.resources[0].status.conditions | selectattr('type', 'equalto', 'Promoted') | selectattr('status', 'equalto', 'True') | list | length == 1
+- name: Verify each recovered VM
+  ansible.builtin.include_tasks: verify_vm.yml
+  loop: '{{ lr_plan.vms }}'
+  loop_control:
+    loop_var: lr_member
+- name: Persist cutover receipt
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: '{{ lr_plan.final_name }}-receipt'
+        namespace: '{{ lr_plan.destination_namespace }}'
+        labels:
+          app.kubernetes.io/managed-by: '{{ recovery_owner }}'
+          app.kubernetes.io/component: label-recovery-receipt
+      data:
+        plan.json: '{{ lr_plan | to_json }}'
+        snapshot.json: '{{ lr_snapshot | to_json }}'
+- ansible.builtin.debug:
+    msg: 'VM recovery verified from the final shutdown snapshot. Reprotect the new active site separately; the old source must remain stopped.'

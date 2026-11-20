@@ -1,0 +1,9 @@
+---
+- name: Establish a replica in a dedicated recovery namespace
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - ansible.builtin.include_role:
+        name: label_recovery
+        tasks_from: establish

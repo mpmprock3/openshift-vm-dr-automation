@@ -1,0 +1,9 @@
+---
+- name: Enroll selected active VMs for recovery using stable labels
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - ansible.builtin.include_role:
+        name: label_recovery
+        tasks_from: enroll

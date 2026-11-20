@@ -1,0 +1,157 @@
+---
+- name: Require an enrolled label recovery plan on the correct destination
+  ansible.builtin.assert:
+    that:
+      - label_recovery_plan.schema_version == 2
+      - label_recovery_plan.destination_api == lookup('env', 'K8S_AUTH_HOST') | regex_replace('/$', '')
+      - label_recovery_plan.source_api != label_recovery_plan.destination_api
+      - label_recovery_plan.destination_namespace not in ['default', 'kube-system', 'kube-public']
+      - not label_recovery_plan.destination_namespace.startswith('openshift')
+- name: Read destination namespace
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Namespace
+    name: '{{ label_recovery_plan.destination_namespace }}'
+  register: lr_namespace_check
+- name: Refuse adoption of an existing unrelated namespace
+  ansible.builtin.assert:
+    that:
+      - lr_namespace_check.resources[0].metadata.labels['app.kubernetes.io/managed-by'] | default('') == recovery_owner
+      - lr_namespace_check.resources[0].metadata.labels[recovery_label_key] | default('') == label_recovery_plan.application
+  when: lr_namespace_check.resources | length > 0
+- name: Validate destination storage class
+  kubernetes.core.k8s_info:
+    api_version: storage.k8s.io/v1
+    kind: StorageClass
+    name: '{{ label_recovery_plan.storage_class }}'
+  register: lr_storage
+- ansible.builtin.assert:
+    that:
+      - lr_storage.resources | length == 1
+      - lr_storage.resources[0].provisioner == 'csi.trident.netapp.io'
+- name: Validate destination archive vault
+  kubernetes.core.k8s_info:
+    api_version: '{{ recovery_api_version }}'
+    kind: AppVault
+    namespace: trident-protect
+    name: '{{ label_recovery_plan.vault }}'
+  register: lr_vault
+- ansible.builtin.assert:
+    that:
+      - lr_vault.resources | length == 1
+      - lr_vault.resources[0].status.state == 'Available'
+- name: Read existing relationship
+  kubernetes.core.k8s_info:
+    api_version: '{{ recovery_api_version }}'
+    kind: AppMirrorRelationship
+    namespace: '{{ label_recovery_plan.destination_namespace }}'
+    name: '{{ label_recovery_plan.application }}-mirror'
+  register: lr_existing_mirror
+- name: Inspect destination workload kinds before first establishment
+  kubernetes.core.k8s_info:
+    api_version: '{{ item.api }}'
+    kind: '{{ item.kind }}'
+    namespace: '{{ label_recovery_plan.destination_namespace }}'
+  loop:
+    - {api: kubevirt.io/v1, kind: VirtualMachine}
+    - {api: v1, kind: PersistentVolumeClaim}
+    - {api: apps/v1, kind: Deployment}
+    - {api: apps/v1, kind: StatefulSet}
+    - {api: apps/v1, kind: DaemonSet}
+    - {api: batch/v1, kind: Job}
+  register: lr_destination_workloads
+  when: lr_existing_mirror.resources | length == 0
+  no_log: true
+- name: Require an empty destination for first establishment
+  ansible.builtin.assert:
+    that: lr_destination_workloads.results | map(attribute='resources') | flatten | length == 0
+    fail_msg: Recovery destination already contains workloads or disks. Nothing will be overwritten.
+  when: lr_existing_mirror.resources | length == 0
+- name: Validate existing relationship identity and direction
+  ansible.builtin.assert:
+    that:
+      - lr_existing_mirror.resources[0].metadata.labels['app.kubernetes.io/managed-by'] | default('') == recovery_owner
+      - lr_existing_mirror.resources[0].spec.sourceApplicationUID == label_recovery_plan.application_uid
+      - lr_existing_mirror.resources[0].spec.desiredState == 'Established'
+      - "lr_existing_mirror.resources[0].spec.namespaceMapping == [{'source': label_recovery_plan.source_namespace, 'destination': label_recovery_plan.destination_namespace}]"
+  when: lr_existing_mirror.resources | length > 0
+- name: Create a dedicated destination namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: '{{ label_recovery_plan.destination_namespace }}'
+        labels: "{{ {'app.kubernetes.io/managed-by': recovery_owner, recovery_label_key: label_recovery_plan.application} }}"
+  when: lr_namespace_check.resources | length == 0
+- name: Persist plan before starting replication
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: '{{ label_recovery_plan.application }}-recovery-plan'
+        namespace: '{{ label_recovery_plan.destination_namespace }}'
+        labels:
+          app.kubernetes.io/managed-by: '{{ recovery_owner }}'
+          app.kubernetes.io/component: label-recovery-plan
+      data:
+        plan.json: '{{ label_recovery_plan | to_json }}'
+- name: Establish replication without promoting the target
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: '{{ recovery_api_version }}'
+      kind: AppMirrorRelationship
+      metadata:
+        name: '{{ label_recovery_plan.application }}-mirror'
+        namespace: '{{ label_recovery_plan.destination_namespace }}'
+        labels:
+          app.kubernetes.io/managed-by: '{{ recovery_owner }}'
+      spec:
+        desiredState: Established
+        sourceApplicationName: '{{ label_recovery_plan.application }}'
+        sourceApplicationUID: '{{ label_recovery_plan.application_uid }}'
+        sourceAppVaultRef: '{{ label_recovery_plan.vault }}'
+        destinationAppVaultRef: '{{ label_recovery_plan.vault }}'
+        namespaceMapping:
+          - source: '{{ label_recovery_plan.source_namespace }}'
+            destination: '{{ label_recovery_plan.destination_namespace }}'
+        storageClassName: '{{ label_recovery_plan.storage_class }}'
+        recurrenceRule: 'DTSTART:20260101T000000Z
+
+          RRULE:FREQ=MINUTELY;INTERVAL={{ label_recovery_plan.interval_minutes }}'
+  when: lr_existing_mirror.resources | length == 0
+- ansible.builtin.include_tasks: wait.yml
+  vars:
+    lr_kind: AppMirrorRelationship
+    lr_name: '{{ label_recovery_plan.application }}-mirror'
+    lr_namespace: '{{ label_recovery_plan.destination_namespace }}'
+    lr_state: Established
+- name: Require a completed replica transfer
+  ansible.builtin.assert:
+    that:
+      - lr_ready.resources[0].status.lastTransfer.completionTimestamp is defined
+      - lr_ready.resources[0].status.lastTransferredSnapshot.name | default('') | length > 0
+      - lr_ready.resources[0].status.conditions | selectattr('type', 'equalto', 'LastTransferSucceeded') | selectattr('status', 'equalto', 'True') | list | length == 1
+- name: Verify each destination disk is bound
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: PersistentVolumeClaim
+    namespace: '{{ label_recovery_plan.destination_namespace }}'
+    name: '{{ item }}'
+  loop: '{{ label_recovery_plan.pvcs }}'
+  register: lr_destination_pvcs
+  failed_when: lr_destination_pvcs.resources | length != 1 or lr_destination_pvcs.resources[0].status.phase != 'Bound'
+- name: Pass replica identity for a separate cutover job
+  ansible.builtin.set_stats:
+    per_host: false
+    aggregate: false
+    data:
+      label_replica_uid: '{{ lr_ready.resources[0].metadata.uid }}'
+- ansible.builtin.debug:
+    msg:
+      result: Replica Established. No VM cutover has been requested.
+      status: '{{ lr_ready.resources[0].status }}'

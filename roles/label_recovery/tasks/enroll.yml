@@ -1,0 +1,239 @@
+---
+- name: Validate selection and dedicated destination
+  ansible.builtin.assert:
+    that:
+      - not ansible_check_mode
+      - lookup('env', 'K8S_AUTH_HOST') is match('^https://[^/]+/?$')
+      - recovery_application_name is match('^[a-z][a-z0-9-]{0,61}[a-z0-9]$')
+      - recovery_vms | length > 0
+      - recovery_vms | unique | length == recovery_vms | length
+      - recovery_source_namespace not in ['default', 'kube-system', 'kube-public']
+      - not recovery_source_namespace.startswith('openshift')
+      - recovery_destination_namespace not in ['default', 'kube-system', 'kube-public']
+      - not recovery_destination_namespace.startswith('openshift')
+      - recovery_destination_api is match('^https://[^/]+$')
+      - recovery_interval_minutes | int >= 5
+    fail_msg: Use explicitly selected VMs and dedicated workload namespaces for this recovery path.
+- name: Read selected VMs without exposing guest credentials
+  kubernetes.core.k8s_info:
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    namespace: '{{ recovery_source_namespace }}'
+    name: '{{ item }}'
+  loop: '{{ recovery_vms }}'
+- name: Read back VM labels without exposing guest data
+  ansible.builtin.debug:
+    msg: 'Selected VMs labeled for {{ recovery_application_name }}.'
+  register: lr_vms
+  no_log: true
+- name: Require each VM and at least one persistent disk
+  ansible.builtin.assert:
+    that:
+      - item.resources | length == 1
+      - item.resources[0].status.ready | default(false)
+      - item.resources[0].spec.template.spec.volumes | selectattr('dataVolume', 'defined') | list | length + item.resources[0].spec.template.spec.volumes | selectattr('persistentVolumeClaim', 'defined') | list | length > 0
+  loop: '{{ lr_vms.results }}'
+  no_log: true
+- name: Initialize selected disk names
+  ansible.builtin.set_fact:
+    lr_disk_names: []
+    lr_vm_identities: []
+- name: Record VM and disk identities
+  ansible.builtin.set_fact:
+    lr_disk_names: >-
+      {{ (lr_disk_names +
+          (item.resources[0].spec.template.spec.volumes | selectattr('dataVolume', 'defined') | map(attribute='dataVolume.name') | list) +
+          (item.resources[0].spec.template.spec.volumes | selectattr('persistentVolumeClaim', 'defined') | map(attribute='persistentVolumeClaim.claimName') | list)) | unique | list }}
+    lr_vm_identities: '{{ lr_vm_identities + [{"name": item.item, "uid": item.resources[0].metadata.uid}] }}'
+  loop: '{{ lr_vms.results }}'
+  no_log: true
+- name: Read selected PVCs
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: PersistentVolumeClaim
+    namespace: '{{ recovery_source_namespace }}'
+    name: '{{ item }}'
+  loop: '{{ lr_disk_names }}'
+  register: lr_pvcs
+- name: Require bound disks on the expected storage class
+  ansible.builtin.assert:
+    that:
+      - item.resources | length == 1
+      - item.resources[0].status.phase == 'Bound'
+      - item.resources[0].spec.storageClassName == recovery_storage_class
+      - (item.resources[0].metadata.labels | default({})).get(recovery_label_key, recovery_application_name) == recovery_application_name
+  loop: '{{ lr_pvcs.results }}'
+  loop_control:
+    label: '{{ item.item }}'
+- name: Read all namespace VMs for shared disk guard
+  kubernetes.core.k8s_info:
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    namespace: '{{ recovery_source_namespace }}'
+  register: lr_all_vms
+  no_log: true
+- name: Refuse disks also referenced by an unselected VM
+  ansible.builtin.assert:
+    that:
+      - >-
+        ((item.spec.template.spec.volumes | selectattr('dataVolume', 'defined') | map(attribute='dataVolume.name') | list) +
+         (item.spec.template.spec.volumes | selectattr('persistentVolumeClaim', 'defined') | map(attribute='persistentVolumeClaim.claimName') | list)) |
+        intersect(lr_disk_names) | length == 0
+  loop: "{{ lr_all_vms.resources | rejectattr('metadata.name', 'in', recovery_vms) | list }}"
+  no_log: true
+- name: Require no conflicting VM group label
+  ansible.builtin.assert:
+    that: (item.resources[0].metadata.labels | default({})).get(recovery_label_key, recovery_application_name) == recovery_application_name
+  loop: '{{ lr_vms.results }}'
+  no_log: true
+- name: Label selected VMs
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: kubevirt.io/v1
+      kind: VirtualMachine
+      metadata:
+        name: '{{ item }}'
+        namespace: '{{ recovery_source_namespace }}'
+        labels: '{{ {recovery_label_key: recovery_application_name} }}'
+  loop: '{{ recovery_vms }}'
+- name: Label selected PVCs
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: '{{ item }}'
+        namespace: '{{ recovery_source_namespace }}'
+        labels: '{{ {recovery_label_key: recovery_application_name} }}'
+  loop: '{{ lr_disk_names }}'
+- name: Read existing application before enrollment
+  kubernetes.core.k8s_info:
+    api_version: '{{ recovery_api_version }}'
+    kind: Application
+    namespace: '{{ recovery_source_namespace }}'
+    name: '{{ recovery_application_name }}'
+  register: lr_existing_app
+- name: Define stable label scope
+  ansible.builtin.set_fact:
+    lr_app_spec:
+      includedNamespaces:
+        - namespace: '{{ recovery_source_namespace }}'
+          labelSelector:
+            matchLabels: '{{ {recovery_label_key: recovery_application_name} }}'
+- name: Refuse adoption of a different application scope
+  ansible.builtin.assert:
+    that:
+      - lr_existing_app.resources[0].metadata.labels['app.kubernetes.io/managed-by'] | default('') == recovery_owner
+      - lr_existing_app.resources[0].spec.includedNamespaces == lr_app_spec.includedNamespaces
+      - lr_existing_app.resources[0].spec.resourceFilter | default({}) == {}
+      - lr_existing_app.resources[0].spec.includedClusterScopedResources | default([]) == []
+  when: lr_existing_app.resources | length > 0
+- name: Create the label-selected application
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: '{{ recovery_api_version }}'
+      kind: Application
+      metadata:
+        name: '{{ recovery_application_name }}'
+        namespace: '{{ recovery_source_namespace }}'
+        labels:
+          app.kubernetes.io/managed-by: '{{ recovery_owner }}'
+      spec: '{{ lr_app_spec }}'
+  when: lr_existing_app.resources | length == 0
+- ansible.builtin.include_tasks: wait.yml
+  vars:
+    lr_kind: Application
+    lr_name: '{{ recovery_application_name }}'
+    lr_namespace: '{{ recovery_source_namespace }}'
+    lr_state: Ready
+- ansible.builtin.set_fact:
+    lr_application_uid: '{{ lr_ready.resources[0].metadata.uid }}'
+- name: Create retained online baseline
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: '{{ recovery_api_version }}'
+      kind: Snapshot
+      metadata:
+        name: '{{ recovery_application_name }}-baseline'
+        namespace: '{{ recovery_source_namespace }}'
+        labels:
+          app.kubernetes.io/managed-by: '{{ recovery_owner }}'
+      spec:
+        applicationRef: '{{ recovery_application_name }}'
+        appVaultRef: '{{ recovery_vault }}'
+        reclaimPolicy: Retain
+- ansible.builtin.include_tasks: wait.yml
+  vars:
+    lr_kind: Snapshot
+    lr_name: '{{ recovery_application_name }}-baseline'
+    lr_namespace: '{{ recovery_source_namespace }}'
+    lr_state: Completed
+- name: Verify exact baseline disk membership
+  ansible.builtin.assert:
+    that:
+      - lr_ready.resources[0].status.pvcs | unique | sort == lr_pvcs.results | map(attribute='resources') | flatten | map(attribute='metadata.uid') | unique | sort
+      - lr_ready.resources[0].status.volumeSnapshots | length == lr_disk_names | length
+- name: Create ongoing source snapshots
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: '{{ recovery_api_version }}'
+      kind: Schedule
+      metadata:
+        name: '{{ recovery_application_name }}-schedule'
+        namespace: '{{ recovery_source_namespace }}'
+        labels:
+          app.kubernetes.io/managed-by: '{{ recovery_owner }}'
+      spec:
+        applicationRef: '{{ recovery_application_name }}'
+        appVaultRef: '{{ recovery_vault }}'
+        enabled: true
+        granularity: Custom
+        recurrenceRule: 'DTSTART:20260101T000000Z
+
+          RRULE:FREQ=MINUTELY;INTERVAL={{ recovery_interval_minutes }}'
+        snapshotRetention: '3'
+        backupRetention: '0'
+- name: Build nonsecret recovery plan
+  ansible.builtin.set_fact:
+    label_recovery_plan:
+      schema_version: 2
+      application: '{{ recovery_application_name }}'
+      application_uid: '{{ lr_application_uid }}'
+      source_namespace: '{{ recovery_source_namespace }}'
+      destination_namespace: '{{ recovery_destination_namespace }}'
+      source_api: "{{ lookup('env', 'K8S_AUTH_HOST') | regex_replace('/$', '') }}"
+      destination_api: '{{ recovery_destination_api }}'
+      vault: '{{ recovery_vault }}'
+      storage_class: '{{ recovery_storage_class }}'
+      interval_minutes: '{{ recovery_interval_minutes }}'
+      label_key: '{{ recovery_label_key }}'
+      vms: '{{ lr_vm_identities }}'
+      pvcs: '{{ lr_pvcs.results | map(attribute="resources") | flatten | map(attribute="metadata") | map(attribute="name") | list }}'
+      pvc_uids: '{{ lr_pvcs.results | map(attribute="resources") | flatten | map(attribute="metadata.uid") | list }}'
+- name: Persist recovery selection on source
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: '{{ recovery_application_name }}-recovery-plan'
+        namespace: '{{ recovery_source_namespace }}'
+        labels:
+          app.kubernetes.io/managed-by: '{{ recovery_owner }}'
+          app.kubernetes.io/component: label-recovery-plan
+      data:
+        plan.json: '{{ label_recovery_plan | to_json }}'
+- name: Pass enrollment to destination job
+  ansible.builtin.set_stats:
+    per_host: false
+    aggregate: false
+    data:
+      label_recovery_plan: '{{ label_recovery_plan }}'
+- ansible.builtin.debug:
+    msg: 'Retained baseline verified. Source VM is still running. Destination replication is a separate step.'

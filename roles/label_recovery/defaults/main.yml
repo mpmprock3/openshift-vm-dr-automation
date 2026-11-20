@@ -1,0 +1,9 @@
+---
+recovery_vault: lab-vault
+recovery_storage_class: storage-class-iscsi
+recovery_interval_minutes: 5
+recovery_poll_seconds: 10
+recovery_poll_retries: 90
+recovery_owner: aap-dr-poc
+recovery_api_version: protect.trident.netapp.io/v1
+recovery_label_key: vmdr.aap/protection-group

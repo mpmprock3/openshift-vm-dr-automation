@@ -1,0 +1,23 @@
+---
+- name: Wait for {{ lr_kind }} {{ lr_name }} to reach {{ lr_state }}
+  kubernetes.core.k8s_info:
+    api_version: '{{ recovery_api_version }}'
+    kind: '{{ lr_kind }}'
+    namespace: '{{ lr_namespace }}'
+    name: '{{ lr_name }}'
+  register: lr_ready
+  until: >-
+    lr_ready.resources | length == 1 and
+    (lr_ready.resources[0].status.state | default('') == lr_state or
+     (lr_kind == 'Application' and lr_ready.resources[0].status.conditions | default([]) |
+       selectattr('type', 'equalto', 'Ready') | selectattr('status', 'equalto', 'True') | list | length > 0) or
+     lr_ready.resources[0].status.error | default('', true) | length > 0 or
+     lr_ready.resources[0].status.state | default('') in ['Failed', 'Error', 'Invalid'])
+  retries: '{{ recovery_poll_retries }}'
+  delay: '{{ recovery_poll_seconds }}'
+- name: Require a healthy controller result
+  ansible.builtin.assert:
+    that:
+      - lr_ready.resources[0].status.error | default('', true) | length == 0
+      - lr_ready.resources[0].status.state | default('') not in ['Failed', 'Error', 'Invalid']
+    fail_msg: 'Controller reported an error: {{ lr_ready.resources[0].status | default({}) }}'

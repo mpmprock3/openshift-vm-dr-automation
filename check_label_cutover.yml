@@ -1,0 +1,9 @@
+---
+- name: Check the recovered replica before cutover
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - ansible.builtin.include_role:
+        name: label_recovery
+        tasks_from: check_cutover

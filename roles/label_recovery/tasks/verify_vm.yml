@@ -1,0 +1,56 @@
+---
+- name: Read restored VM without exposing guest configuration
+  kubernetes.core.k8s_info:
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    name: '{{ lr_member.name }}'
+    namespace: '{{ lr_plan.destination_namespace }}'
+  register: lr_restored_vm
+  no_log: true
+- ansible.builtin.assert:
+    that:
+      - lr_restored_vm.resources | length == 1
+      - lr_restored_vm.resources[0].metadata.labels[lr_plan.label_key] | default('') == lr_plan.application
+      - >-
+        ((lr_restored_vm.resources[0].spec.template.spec.volumes | selectattr('dataVolume', 'defined') | map(attribute='dataVolume.name') | list) +
+         (lr_restored_vm.resources[0].spec.template.spec.volumes | selectattr('persistentVolumeClaim', 'defined') | map(attribute='persistentVolumeClaim.claimName') | list)) |
+        difference(lr_plan.pvcs) | length == 0
+- name: Start restored VM if archived state was stopped
+  kubernetes.core.k8s_json_patch:
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    name: '{{ lr_member.name }}'
+    namespace: '{{ lr_plan.destination_namespace }}'
+    patch:
+      - {op: test, path: /metadata/uid, value: '{{ lr_restored_vm.resources[0].metadata.uid }}'}
+      - op: replace
+        path: "{{ '/spec/runStrategy' if lr_restored_vm.resources[0].spec.runStrategy is defined else '/spec/running' }}"
+        value: "{{ 'Always' if lr_restored_vm.resources[0].spec.runStrategy is defined else true }}"
+  when: lr_restored_vm.resources[0].spec.runStrategy | default('') == 'Halted' or lr_restored_vm.resources[0].spec.running | default(true) == false
+  no_log: true
+- name: Wait for recovered VM readiness
+  kubernetes.core.k8s_info:
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    name: '{{ lr_member.name }}'
+    namespace: '{{ lr_plan.destination_namespace }}'
+  register: lr_vm_ready
+  until: lr_vm_ready.resources | length == 1 and lr_vm_ready.resources[0].status.ready | default(false)
+  retries: 90
+  delay: 10
+  no_log: true
+- name: Verify the running instance
+  kubernetes.core.k8s_info:
+    api_version: kubevirt.io/v1
+    kind: VirtualMachineInstance
+    name: '{{ lr_member.name }}'
+    namespace: '{{ lr_plan.destination_namespace }}'
+  register: lr_vmi_ready
+  no_log: true
+- ansible.builtin.assert:
+    that:
+      - lr_vmi_ready.resources | length == 1
+      - lr_vmi_ready.resources[0].status.phase == 'Running'
+      - lr_vmi_ready.resources[0].status.conditions | selectattr('type', 'equalto', 'Ready') | selectattr('status', 'equalto', 'True') | list | length == 1
+- ansible.builtin.debug:
+    msg: 'Recovered VM {{ lr_plan.destination_namespace }}/{{ lr_member.name }} is Ready.'
