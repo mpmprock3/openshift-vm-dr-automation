@@ -1,6 +1,6 @@
 # OpenShift VM disaster recovery automation
 
-**New or recreated clusters? Start with the [step-by-step rebuild guide](docs/REBUILD.md).** It covers prerequisites, optional ACM, AAP installation, credentials, all initial templates and surveys, replication, failover, acceptance tests and troubleshooting. The [bootstrap manifests](bootstrap/) contain the non-secret starting resources.
+**New or recreated clusters? Follow the [one-pass rebuild runbook](docs/RUNBOOK.md)**: ordered steps, checkpoints, and the mistakes from the first lab, so you don't repeat the trial and error. The [detailed rebuild guide](docs/REBUILD.md) explains each stage in depth. It covers prerequisites, optional ACM, AAP installation, credentials, all initial templates and surveys, replication, failover, acceptance tests and troubleshooting. The [bootstrap manifests](bootstrap/) contain the non-secret starting resources.
 
 Ansible playbooks enroll selected OpenShift Virtualization VMs in NetApp Trident Protect replication. AAP supplies the survey answers and cluster credentials; Trident Protect performs snapshot and replication operations. The workflow uses Ansible roles and YAML/Jinja templates, with no custom Python scripts or filter plugins to maintain.
 

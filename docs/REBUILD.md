@@ -1,6 +1,6 @@
 # Rebuild the OpenShift Virtualization DR POC
 
-Last reviewed: 10 November 2026. Start here after recreating the lab clusters. This guide does not require the original chat.
+Last reviewed: 10 November 2026. **For a quick, in-order rebuild, use the [one-pass runbook](RUNBOOK.md).** This guide is the detailed reference behind it and does not require the original chat.
 
 The code survived in [GitHub](https://github.com/mpmprock3/openshift-vm-dr-automation). Cluster-local AAP configuration, credentials, Kubernetes objects and VM data are not backed up by this repository. This procedure builds a **new POC**. If old ONTAP volumes, mirror relationships or object-storage archives survived, inventory them with the storage administrator before provisioning into the same names. This is not an automatic recovery procedure for a destroyed cluster.
 
