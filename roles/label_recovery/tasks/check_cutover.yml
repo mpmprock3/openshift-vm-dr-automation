@@ -35,7 +35,8 @@
       - lr_cutover_amr.resources[0].spec.sourceApplicationUID == lr_plan.application_uid
       - lr_cutover_amr.resources[0].status.state in ['Established', 'Promoted']
       - lr_cutover_amr.resources[0].status.error | default('', true) | length == 0
-      - lr_cutover_amr.resources[0].status.lastTransfer.completionTimestamp is defined
+      - lr_cutover_amr.resources[0].status.lastTransferredSnapshot.name | default('') | length > 0
+      - lr_cutover_amr.resources[0].status.conditions | selectattr('type', 'equalto', 'LastTransferSucceeded') | selectattr('status', 'equalto', 'True') | list | length == 1
 - name: Verify target disk set
   kubernetes.core.k8s_info:
     api_version: v1
