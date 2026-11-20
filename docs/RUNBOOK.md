@@ -45,7 +45,18 @@ Fail Over to DR   (Workflow; created automatically)
   Prepare DR Failover → Isolate Source VMs (on PROD) → Promote DR Replica → Verify DR Recovery
 ```
 
-**Status at the end of the first lab.** Steps 1–11 worked on live clusters: AMR `Established` and DR PVC `Bound`. Step 12 reached the failover launch form, but **a live failover was never run**. Steps 12–13 are therefore the first real test. Same-IP behaviour and failback have not been verified, and failback is not implemented.
+**Status at the end of the first lab.** Steps 1–11 worked on live clusters: AMR `Established` and DR PVC `Bound`. Step 12 reached the failover launch form, but **a live failover was never run**. Steps 11–12 are therefore the first real test. In the second lab, failover needed `protect_allow_emulation: true` because DR had no KVM nodes (step 5.3). Same-IP behaviour has not been verified.
+
+**Failback (step 13)** is partly implemented on `main`: preparing a DR baseline and **reverse replication DR → PROD** are automated. The **final cutover back to PROD is not implemented yet**, so after step 13, DR is still the active site. Reverse replication has only been tested against simulated responses; step 13 is its first live test.
+
+```text
+Prepare DR Failback Source   (Job Template; survey filled by Refresh Failback Choices)
+
+Configure Reverse Replication Workflow   (standalone Job Template; run it ONCE, it builds the next workflow)
+
+Establish Reverse Replication   (Workflow; created automatically)
+  Inspect Reverse Source (DR) → Prepare Reverse Destination (PROD) → Release Promoted Relationship (DR) → Establish Reverse Mirror (PROD)
+```
 
 ---
 
@@ -130,7 +141,7 @@ oc --context=DR adm top nodes
 - `storage-class-iscsi` (provisioner `csi.trident.netapp.io`) and `csi-trident-vsc` exist on both clusters. `gp3-csi` stays the default class (AAP's database uses it).
 - `trident-protect-controller-manager` uses the image `netapp/controller:26.02.0` on both clusters.
 - `lab-vault` reports `Available` on both clusters and points to the same bucket.
-- **At least one DR node shows KVM > 0.** The failover job `Prepare DR Failover` refuses to run otherwise. In the first lab, every worker showed `0`. On ROSA this usually means you need a bare-metal machine pool for VMs. Fix it now, not on failover day.
+- **At least one DR node shows KVM > 0.** The failover job `Prepare DR Failover` refuses to run otherwise. In the first lab, every worker showed `0`. On ROSA this usually means you need a bare-metal machine pool for VMs. **Or**, for a POC lab running with software emulation, set `protect_allow_emulation: true` in the inventory (step 5.3) and confirm the emulation checks there. Sort this out now, not on failover day.
 - DR has free memory for AAP (~6–8 GiB of requests) **plus** the recovered VMs. In the first lab PROD was already ~80–90% reserved after ACM, so AAP went on DR.
 
 If Trident or Trident Protect or the AppVault is missing (the first lab had them pre-provisioned), install them with the commands in [REBUILD.md §4](REBUILD.md#4-rebuild-netapp-prerequisites-on-both-clusters) (that file still says `dc`/`dr`; use `PROD`/`DR`). ONTAP/SVM peering must already be in place; Ansible does not configure it.
@@ -235,7 +246,22 @@ All of these go in the same **Organization** (for example `Default`). In the AAP
 ```yaml
 ansible_connection: local
 ansible_python_interpreter: "{{ ansible_playbook_python }}"
+protect_allow_emulation: true
 ```
+
+`protect_allow_emulation: true` is needed when **no DR node shows KVM > 0** and the lab runs OpenShift Virtualization with software emulation. Without it, `Prepare DR Failover` stops with `No eligible DR virtualization node` (seen and fixed in the second lab). The flag doesn't turn emulation on; it only lets the job accept a zero-KVM node when **all** of these are true on DR:
+
+- exactly one KubeVirt CR in `openshift-cnv`, with `useEmulation: true` and `Available=True`;
+- at least one Ready, uncordoned node labeled `kubevirt.io/schedulable=true`.
+
+Check both before failover day:
+
+```bash
+oc --context=DR get kubevirt.kubevirt.io -n openshift-cnv -o jsonpath='{range .items[*]}{.metadata.name}{" useEmulation="}{.spec.configuration.developerConfiguration.useEmulation}{" Available="}{.status.conditions[?(@.type=="Available")].status}{"\n"}{end}'
+oc --context=DR get nodes -o custom-columns='NAME:.metadata.name,READY:.status.conditions[?(@.type=="Ready")].status,UNSCHED:.spec.unschedulable,SCHEDULABLE:.metadata.labels.kubevirt\.io/schedulable,KVM:.status.allocatable.devices\.kubevirt\.io/kvm'
+```
+
+Pass when you see `useEmulation=true Available=True`, and at least one node with `READY=True`, `UNSCHED=<none>`, `SCHEDULABLE=true`. If a DR node has real KVM > 0, hardware mode is used automatically and the flag has no effect, so it's safe to leave it in. Emulation is a POC shortcut only: it doesn't prove production support or performance.
 
 ### 5.4 Project
 
@@ -439,11 +465,151 @@ virtctl console dr-demo-vm -n vmdr
 | Same IP | `ip -br addr` in the DR guest matches step 6 **and** an external client can reach it. This needs the same VLAN/subnet on DR (NAD + guest static IP or DHCP reservation); the automation doesn't configure networking |
 | Timing | Record failover start → VM usable |
 
-**Don't "fail back"** by setting the AMR back to `Established` or by re-running *Enable DR Protection*: that discards DR-side changes. Failback isn't implemented. To repeat the demo, protect a **new** VM with a **new** plan name and **new** destination namespace.
+**Don't "fail back" by hand** by setting the AMR back to `Established` or by re-running *Enable DR Protection*: that discards DR-side changes. Use step 13 instead. To repeat only the failover demo, protect a **new** VM with a **new** plan name and **new** destination namespace.
 
 ---
 
-## 13. Mistakes from the first lab and how to avoid them
+## 13. Failback, part 1: reverse replication DR → PROD (⚠ first live test)
+
+**What this does.** It keeps DR running and makes PROD the replication *target*. When it finishes, the DR VM's disks (including any changes made on DR after failover) are replicated back to PROD's original, stopped disks every few minutes.
+
+**What it does NOT do (not implemented yet).** It doesn't stop the DR VM, take a final shutdown snapshot, promote PROD or start the PROD VM. The final planned cutover is the next stage of development. **Until then, DR stays the active site after this step.**
+
+**Before you start**
+
+- Step 11 succeeded: AMR in `vmdr` is `Promoted` and the DR VM is `Running`.
+- The PROD VM is **stopped** (step 11 halted it). **Never start it during step 13.** The reverse transfer overwrites its disk; starting it creates two active copies.
+- The AAP project `VMDR automation` points at branch `main` (step 5.4) and has been **synced** after the failback commits. The failback playbooks exist only on `main`.
+- Constraints the automation enforces: one destination storage class per group, an invertible namespace mapping (the step 9 answers `default` → `vmdr` are fine), and the original PROD Application and stopped VM must still exist. Don't delete anything on PROD.
+
+Check the starting state:
+
+```bash
+oc --context=DR get appmirrorrelationships.protect.trident.netapp.io -n vmdr
+oc --context=DR get vm,vmi -n vmdr
+oc --context=PROD get vm,vmi -n default
+oc --context=PROD get applications.protect.trident.netapp.io,schedules.protect.trident.netapp.io -n default
+```
+
+Pass when: the AMR shows `Promoted`, the DR VMI is `Running`, the PROD VM is `Stopped` with **no** VMI, and the PROD Application still exists. (The PROD schedule may still exist but paused; step 13.4 removes it.)
+
+### 13.1 Write test data on DR (≈2 min)
+
+In the DR guest (`oc config use-context DR`, then `virtctl console dr-demo-vm -n vmdr`, or the web console):
+
+```bash
+date | sudo tee /root/written-on-dr.txt; sync
+```
+
+Record the time. This file proves later that DR changes reach PROD. You can only check it on PROD after a cutover, which isn't automated yet. Until then it shows up as transferred data in the reverse relationship.
+
+### 13.2 Create the failback preparation jobs (≈5 min, once)
+
+Create them **in this order**: the refresh job looks up the preparation template by name. Use the same inventory, project, execution environment and organization as before. Turn **concurrent jobs off**, leave extra variables empty.
+
+| Name (exactly) | Playbook | Credential(s) | Timeout |
+|---|---|---|---|
+| `Prepare DR Failback Source` | `prepare_dr_failback_source.yml` | OpenShift DR | 7200 |
+| `Refresh Failback Choices` | `refresh_failback_choices.yml` | OpenShift DR **+** AAP Survey Updater | default |
+
+Launch **`Refresh Failback Choices`**. It lists the groups currently `Promoted` on DR and adds a survey to `Prepare DR Failback Source`. It changes nothing on the clusters.
+
+✅ **Checkpoint:** the job output `choices` contains something like `demo-vm-plan (default/dr-demo-vm) | vmdr/demo-vm-plan-<hash>-mirror`. If it shows `No eligible promoted groups`, step 11 didn't finish promotion: check the AMR.
+
+### 13.3 Take the DR baseline snapshot (≈5–15 min)
+
+Open a **new** launch form for **`Prepare DR Failback Source`**, select your group, and launch.
+
+It checks the DR catalog, the promoted AMR and the live DR VMs and disks, rebuilds the DR Application's resource filter to point at the **current** DR disks, and creates a retained online Snapshot `<app>-fb-<hash>`, waiting for `Completed`. It doesn't stop VMs, touch PROD or change replication. Retrying reuses the same snapshot name for the same promotion.
+
+✅ **Checkpoint**
+
+```bash
+oc --context=DR get applications.protect.trident.netapp.io,snapshots.protect.trident.netapp.io -n vmdr
+oc --context=DR get volumesnapshots.snapshot.storage.k8s.io -n vmdr
+oc --context=DR get configmap -n vmdr | grep -- '-fb-'
+```
+
+- The job ends with `baseline snapshot Completed` and `failed=0`, and reports the snapshot name.
+- A Snapshot `...-fb-<hash>` is `Completed`, and the VolumeSnapshots match the DR VM disk PVC(s) (`oc --context=DR get pvc -n vmdr`).
+- A `...-fb-<hash>-scope` ConfigMap holds the reviewed resource filter.
+
+**Don't delete this snapshot.** Step 13.4 requires it.
+
+### 13.4 Build and run the reverse replication workflow (≈20–40 min, mostly waiting)
+
+1. Create **one Job Template** (not a workflow; don't add it to a workflow):
+
+   | Field | Value |
+   |---|---|
+   | Name | `Configure Reverse Replication Workflow` |
+   | Inventory / Project / EE | `DR-Automation` / `VMDR automation` / same as before |
+   | Playbook | `configure_reverse_workflow.yml` |
+   | Credentials | **OpenShift DR + AAP Survey Updater** |
+   | Extra variables | empty |
+
+2. **Launch it directly.** It copies settings from `Configure DC Protection`, `Establish DR Replication` and `Refresh Failback Choices` (so those must exist with those exact names) and creates:
+   - the workflow **`Establish Reverse Replication`** with its survey and success-only links;
+   - the templates `Inspect Reverse Source` (DR), `Prepare Reverse Destination` (PROD), `Release Promoted Relationship` (DR), `Establish Reverse Mirror` (PROD) and `Refresh Reverse Choices`.
+
+   It doesn't start reverse replication. If it stops partway, sync the project and launch it again.
+
+3. Launch **`Refresh Reverse Choices`**, then open a **new** **`Establish Reverse Replication`** launch form, select the same group, and launch.
+
+What the four stages do:
+
+| Stage | Cluster | Effect |
+|---|---|---|
+| Inspect Reverse Source | DR | Checks live VMs, baseline snapshot membership and identities; saves a `reverse-<hash>` ConfigMap in `vmdr` (the retry record) |
+| Prepare Reverse Destination | PROD | Confirms the original PROD VMs are still the same stopped instances, checks AppVault and storage access, **removes the managed PROD snapshot schedule** for this app |
+| Release Promoted Relationship | DR | **Deletes the original promoted AMR** in `vmdr` (with UID checks) and creates a DR snapshot schedule `reverse-<hash>-schedule` |
+| Establish Reverse Mirror | PROD | Creates the inverse AMR `reverse-<hash>` in `default` on PROD and waits for `Established` plus a successful transfer |
+
+The first reverse transfer may be a full copy (the first lab took ~13 minutes for 30 GiB the other way).
+
+✅ **Checkpoint**
+
+```bash
+oc --context=PROD get appmirrorrelationships.protect.trident.netapp.io -n default
+oc --context=DR get appmirrorrelationships.protect.trident.netapp.io -n vmdr
+oc --context=DR get schedules.protect.trident.netapp.io -n vmdr
+oc --context=PROD get schedules.protect.trident.netapp.io -n default
+oc --context=DR get configmap -n vmdr -l app.kubernetes.io/component=reverse-replication-plan
+oc --context=DR get vm,vmi -n vmdr
+oc --context=PROD get vm,vmi -n default
+```
+
+- The last job ends with `failed=0` and reports `relationship: default/reverse-<hash>`.
+- PROD: AMR `reverse-<hash>` is `DESIRED STATE=Established`, `STATE=Established`, `ERROR` empty.
+- DR: the original `demo-vm-plan-<hash>-mirror` AMR is **gone**, and the schedule `reverse-<hash>-schedule` exists.
+- PROD: no schedule left for the original app.
+- DR VMI still `Running`. PROD VM still `Stopped` with no VMI.
+- After 10+ minutes, the last transferred snapshot keeps advancing:
+
+```bash
+REV=$(oc --context=PROD get appmirrorrelationships.protect.trident.netapp.io -n default -o name | grep reverse- | head -1); echo "$REV"
+oc --context=PROD get "$REV" -n default -o jsonpath='{.status.state}{"  "}{.status.lastTransferredSnapshot}{"\n"}'
+```
+
+### 13.5 If a stage fails
+
+- **Before `Release Promoted Relationship`:** nothing irreversible has happened on DR. Fix the cause (the job message says what), sync the project, and relaunch **Establish Reverse Replication** for the same group.
+- **After the original AMR was deleted:** relaunch the **same workflow and the same group**. The group stays in the survey because `Refresh Reverse Choices` also lists saved `reverse-<hash>` records. Inspection resumes from that record.
+- **Never** delete the `reverse-<hash>` ConfigMap or the `-fb-` baseline snapshot, re-create the old AMR, set any AMR back to `Established` by hand, or re-run *Enable DR Protection* to "retry".
+- `Original DC application was replaced or removed` → the PROD Application was deleted or recreated. Reverse resync can't reuse it; stop and review.
+- `This reverse stage supports one destination storage class per group` / `requires invertible namespace mapping` → that group's design isn't supported yet; use a simpler test group.
+- `Existing destination relationship requires review` → another AMR on PROD already uses this app; inspect it with `oc --context=PROD get appmirrorrelationships.protect.trident.netapp.io -A`.
+
+### 13.6 Where this leaves you
+
+- **Active site:** DR. **Replication:** DR → PROD every few minutes. **PROD VM:** stopped, disk being refreshed from DR.
+- **Don't start the PROD VM** and don't let other automation (GitOps, scripts) start it. That gives two active copies and the next transfer overwrites PROD's changes.
+- **Final cutover (stop DR, ShutdownSnapshot, promote on PROD, start PROD, re-protect PROD → DR) is not implemented.** Don't improvise it by editing AMRs by hand; wait for the cutover automation.
+- To repeat failback testing, start again from step 9 with a **new** VM, plan name and destination namespace. Repeated failback cycles on the same group aren't supported.
+
+---
+
+## 14. Mistakes from the first lab and how to avoid them
 
 | What went wrong last time | Do this instead |
 |---|---|
@@ -465,11 +631,13 @@ virtctl console dr-demo-vm -n vmdr
 | `Configure Failover Workflow` failed (hidden API error / "differs" / organization assert) | Fixed (commits `e49c5e0`, `00e4aa9`, `dd5deb4`). Sync the project, then rerun; it resumes |
 | Unsure whether the failover setup is a workflow | It's a standalone **Job Template**, run once |
 | Expected the dropdowns to be live | Run *Refresh VM Choices* / *Refresh Recovery Choices*, then open a **new** form |
+| `Prepare DR Failover`: `No eligible DR virtualization node` (DR has KVM = 0) | Add `protect_allow_emulation: true` to the `DR-Automation` inventory (step 5.3), sync, relaunch with the same request ID |
+| Thought failback would bring the VM back to PROD | Step 13 only reverses replication; DR stays active. Final cutover isn't implemented. Keep the PROD VM stopped |
 | Wanted a 2-minute RPO | Not supported by this asynchronous design (5 minutes minimum on FlexVol). Treat it as a separate architecture topic with NetApp |
 
 ---
 
-## 14. Quick diagnostics
+## 15. Quick diagnostics
 
 ```bash
 oc --context=PROD logs -n trident-protect deploy/trident-protect-controller-manager --since=30m | tail -100
@@ -489,7 +657,7 @@ tridentctl-protect get app -n default
 
 `tridentctl-protect` was available on the lab bastion. If the Ansible-created Application misbehaves, a baseline test is `tridentctl-protect create app tp-baseline --namespaces default -n default` (with PROD as the current context). It should reach `Ready` within seconds. Delete it afterwards with `oc --context=PROD delete applications.protect.trident.netapp.io tp-baseline -n default`. More symptoms are covered in [REBUILD.md §15](REBUILD.md#15-troubleshooting-from-the-original-lab).
 
-## 15. Before the new cluster expires
+## 16. Before the new cluster expires
 
 - Note the Git commit, survey answers, AMR name and results somewhere outside the cluster.
 - If you want to keep AAP, take an **AnsibleAutomationPlatformBackup** and copy it **off the cluster**. A backup PVC on the same cluster dies with it.
