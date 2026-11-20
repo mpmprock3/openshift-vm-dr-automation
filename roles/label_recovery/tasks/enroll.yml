@@ -21,9 +21,6 @@
     namespace: '{{ recovery_source_namespace }}'
     name: '{{ item }}'
   loop: '{{ recovery_vms }}'
-- name: Read back VM labels without exposing guest data
-  ansible.builtin.debug:
-    msg: 'Selected VMs labeled for {{ recovery_application_name }}.'
   register: lr_vms
   no_log: true
 - name: Require each VM and at least one persistent disk
