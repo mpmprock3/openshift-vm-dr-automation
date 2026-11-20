@@ -1,0 +1,4 @@
+---
+- name: Use a fresh baseline identity for each recovered incarnation or cutover
+  ansible.builtin.set_fact:
+    lr_baseline_name: "{{ recovery_application_name[:35] }}-base-{{ ((recovery_baseline_seed | default(lr_vm_identities | map(attribute='uid') | sort | join(','))) ~ (lr_pvcs.results | map(attribute='resources') | flatten | map(attribute='metadata.uid') | sort | join(',')) | hash('sha256'))[:12] }}"

@@ -1,0 +1,37 @@
+---
+- name: Verify snapshot identity across retries and VM recovery cycles
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    recovery_application_name: finance-recovery
+    lr_vm_identities: [{name: database, uid: vm-first}]
+    lr_pvcs:
+      results:
+        - resources:
+            - metadata: {uid: pvc-first}
+  tasks:
+    - ansible.builtin.include_tasks: ../roles/label_recovery/tasks/baseline_identity.yml
+    - ansible.builtin.set_fact:
+        first_baseline: '{{ lr_baseline_name }}'
+    - ansible.builtin.include_tasks: ../roles/label_recovery/tasks/baseline_identity.yml
+    - ansible.builtin.assert:
+        that:
+          - lr_baseline_name == first_baseline
+          - lr_baseline_name | length <= 63
+          - lr_baseline_name is match('^[a-z0-9-]+$')
+    - ansible.builtin.include_tasks: ../roles/label_recovery/tasks/baseline_identity.yml
+      vars:
+        recovery_baseline_seed: second-mirror-uid
+    - ansible.builtin.assert:
+        that: lr_baseline_name != first_baseline
+        fail_msg: A new cutover must not reuse an old cycle's baseline.
+    - ansible.builtin.include_tasks: ../roles/label_recovery/tasks/baseline_identity.yml
+      vars:
+        lr_pvcs:
+          results:
+            - resources:
+                - metadata: {uid: pvc-recreated}
+    - ansible.builtin.assert:
+        that: lr_baseline_name != first_baseline
+        fail_msg: A replaced disk must not reuse the original disk's baseline.

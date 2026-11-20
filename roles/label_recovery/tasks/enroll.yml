@@ -149,6 +149,7 @@
     lr_state: Ready
 - ansible.builtin.set_fact:
     lr_application_uid: '{{ lr_ready.resources[0].metadata.uid }}'
+- ansible.builtin.include_tasks: baseline_identity.yml
 - name: Create retained online baseline
   kubernetes.core.k8s:
     state: present
@@ -156,7 +157,7 @@
       apiVersion: '{{ recovery_api_version }}'
       kind: Snapshot
       metadata:
-        name: '{{ recovery_application_name }}-baseline'
+        name: '{{ lr_baseline_name }}'
         namespace: '{{ recovery_source_namespace }}'
         labels:
           app.kubernetes.io/managed-by: '{{ recovery_owner }}'
@@ -167,7 +168,7 @@
 - ansible.builtin.include_tasks: wait.yml
   vars:
     lr_kind: Snapshot
-    lr_name: '{{ recovery_application_name }}-baseline'
+    lr_name: '{{ lr_baseline_name }}'
     lr_namespace: '{{ recovery_source_namespace }}'
     lr_state: Completed
 - name: Verify exact baseline disk membership
