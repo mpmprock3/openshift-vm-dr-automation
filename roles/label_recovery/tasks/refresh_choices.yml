@@ -1,0 +1,86 @@
+---
+- name: Require cluster and AAP API credentials
+  ansible.builtin.assert:
+    that:
+      - lookup('env', 'K8S_AUTH_HOST') is match('^https://[^/]+/?$')
+      - lookup('env', 'AAP_SURVEY_HOST') is match('^https://[^/]+/?$')
+      - lookup('env', 'AAP_SURVEY_TOKEN') | length > 0
+  no_log: true
+- name: Discover enrolled label recovery plans
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ConfigMap
+    label_selectors:
+      - app.kubernetes.io/component=label-recovery-plan
+      - 'app.kubernetes.io/managed-by={{ recovery_owner }}'
+  register: lr_catalogs
+- name: Discover current replica states
+  kubernetes.core.k8s_info:
+    api_version: '{{ recovery_api_version }}'
+    kind: AppMirrorRelationship
+  register: lr_mirrors
+- ansible.builtin.set_fact:
+    lr_choices: []
+- name: Add only currently established enrolled replicas
+  ansible.builtin.set_fact:
+    lr_choices: '{{ lr_choices + [item.metadata.namespace ~ "/" ~ catalog.application] }}'
+  vars:
+    catalog: '{{ item.data["plan.json"] | from_json }}'
+    mirrors: '{{ lr_mirrors.resources | selectattr("metadata.namespace", "equalto", item.metadata.namespace) | selectattr("metadata.name", "equalto", catalog.application ~ "-mirror") | list }}'
+  loop: '{{ lr_catalogs.resources }}'
+  loop_control:
+    label: '{{ item.metadata.namespace }}/{{ item.metadata.name }}'
+  when:
+    - catalog.schema_version == 2
+    - catalog.destination_api == lookup('env', 'K8S_AUTH_HOST') | regex_replace('/$', '')
+    - mirrors | length == 1
+    - mirrors[0].spec.sourceApplicationUID == catalog.application_uid
+    - mirrors[0].status.state | default('') == 'Established'
+    - mirrors[0].status.error | default('', true) | length == 0
+- name: Find the configured recovery workflow
+  ansible.builtin.include_role:
+    name: vmdr
+    tasks_from: survey_api
+  vars:
+    survey_path: "/api/controller/v2/workflow_job_templates/?{{ {'name': recovery_workflow_name | default('Fail Back to DC - Label Recovery')} | urlencode }}"
+- ansible.builtin.assert:
+    that: survey_response.json.count == 1
+- ansible.builtin.set_fact:
+    lr_survey_path: '/api/controller/v2/workflow_job_templates/{{ survey_response.json.results[0].id }}/survey_spec/'
+- ansible.builtin.include_role:
+    name: vmdr
+    tasks_from: survey_api
+  vars:
+    survey_path: '{{ lr_survey_path }}'
+- ansible.builtin.set_fact:
+    lr_original_survey: '{{ survey_response.json }}'
+    lr_updated_questions: []
+- ansible.builtin.assert:
+    that: lr_original_survey.spec | selectattr('variable', 'equalto', 'label_recovery_target') | list | length == 1
+- name: Refresh the group selector and preserve other questions
+  ansible.builtin.set_fact:
+    lr_updated_questions: "{{ lr_updated_questions + [(item | combine({'choices': ((lr_choices | unique | sort) if lr_choices | length else ['No eligible replica - establish protection first']) | join('\n'), 'default': ''})) if item.variable == 'label_recovery_target' else item] }}"
+  loop: '{{ lr_original_survey.spec }}'
+  loop_control:
+    label: '{{ item.variable }}'
+- name: Recheck for concurrent survey edits
+  ansible.builtin.include_role:
+    name: vmdr
+    tasks_from: survey_api
+  vars:
+    survey_path: '{{ lr_survey_path }}'
+- ansible.builtin.assert:
+    that: survey_response.json == lr_original_survey
+- name: Store the refreshed survey
+  ansible.builtin.include_role:
+    name: vmdr
+    tasks_from: survey_api
+  vars:
+    survey_path: '{{ lr_survey_path }}'
+    survey_method: POST
+    survey_body: "{{ lr_original_survey | combine({'spec': lr_updated_questions}) }}"
+  when: lr_original_survey.spec != lr_updated_questions
+- ansible.builtin.debug:
+    msg:
+      eligible_groups: '{{ lr_choices | unique | sort }}'
+      next: Open a new launch form. Groups already active on this site are not eligible for another failback to this site.

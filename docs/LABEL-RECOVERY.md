@@ -34,12 +34,16 @@ Use a separate AAP workflow with these success-only stages:
 | Check replica and compute | `check_label_cutover.yml` | Destination |
 | Shut down active source and capture final data | `shutdown_label_source.yml` | Source |
 | Promote exact final snapshot and verify VMs | `promote_label_replica.yml` | Destination |
+| Protect the recovered active site | `activate_label_protection.yml` | Destination |
+| Re-establish replication toward the stopped source | `reprotect_label_source.yml` | Original source |
 
-The launch survey selects an enrolled `label_recovery_target` (`destination-namespace/application-name`). The job reads the saved plan; users do not type AMR UIDs or request IDs. The actual mirror UID generates the retry identity. Retry the same workflow after correcting a failure. Do not manually replace the mirror during cutover.
+The launch survey selects an enrolled `label_recovery_target` (`destination-namespace/application-name`). The job reads the saved plan; users do not type AMR UIDs or request IDs. The actual mirror UID generates the retry identity. Do not manually replace the mirror during cutover. If recovery fails after the promoted mirror has been released, inspect the cutover receipt and resume the failed stage with its saved workflow variables; do not blindly start another full cutover against the changed catalog.
+
+Create a separate **Refresh Label Recovery Choices** job using `refresh_label_recovery_choices.yml`, the destination Kubernetes credential and **AAP Survey Updater**. Its `recovery_workflow_name` defaults to `Fail Back to DC - Label Recovery`. It discovers eligible established replicas and updates the existing `label_recovery_target` survey question. Open a new launch form after refreshing. AAP surveys do not fetch the cluster on every dropdown click.
 
 For emulated POC compute only, set `recovery_allow_emulation: true`; this does not enable emulation. Source shutdown is blocked unless target compute, identity and disk checks pass. The final snapshot must contain exactly the source PVC UIDs. Promotion uses its archive basename as `promotedSnapshot` and checks restored VM readiness.
 
-The three-stage cutover ends with the destination active and its AMR Promoted. Re-establishing protection in the other direction is a separate step. Never use ordinary resync to preserve writes made at the active recovery site. Application-level data verification remains necessary; VM readiness alone does not prove application consistency.
+After recovery, the fourth stage releases the promoted mirror and creates snapshots on the new active site. The fifth stage requires the original source VMs to be absent, verifies retained Application/PVC identities and the unchanged label scope, removes disabled schedules, and establishes replication in the opposite direction. It does not rewrite namespace/PV/pod resource filters. Never use ordinary resync to preserve writes made at the active recovery site. Application-level data verification remains necessary; VM readiness alone does not prove application consistency.
 
 ## Limits and validation
 

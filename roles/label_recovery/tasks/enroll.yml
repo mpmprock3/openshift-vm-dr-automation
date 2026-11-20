@@ -94,6 +94,7 @@
         namespace: '{{ recovery_source_namespace }}'
         labels: '{{ {recovery_label_key: recovery_application_name} }}'
   loop: '{{ recovery_vms }}'
+  no_log: true
 - name: Label selected PVCs
   kubernetes.core.k8s:
     state: present

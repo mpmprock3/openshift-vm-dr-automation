@@ -1,8 +1,12 @@
-# Data-preserving failback through AAP
+# Legacy failback implementation
+
+**For the replacement recovery path, use [Label Recovery](LABEL-RECOVERY.md).** This page documents the earlier implementation and its limitations. Its site-specific Application filters did not pass live reverse-replication qualification. Do not use filter copying to bypass destination Application reuse checks.
 
 The **Fail Back to DC** workflow implements reverse replication, final DR shutdown, DC recovery from the selected shutdown snapshot, and restoration of DC-to-DR protection. All operational tasks use native Ansible modules; no customer Python script or `oc` shell wrapper is required.
 
 Status: implemented and locally tested with simulated Kubernetes/controller responses. It is not yet live-qualified against the customer's NetApp environment. A successful simulation does not establish production support, zero data loss, application consistency, IP preservation or a measured RPO/RTO. Validate the actual workload and supported infrastructure before production use.
+
+**Live blocker (2026-11-20):** reverse replication failed before transfer because Trident Protect rejected reuse of the existing DC Application. An attempted filter-copy workaround then triggered a broad destination cleanup. A project sync or polling fix alone is not a repair. The replacement path uses stable VM/PVC labels and a dedicated destination, following the selection pattern in [NetApp's Ansible reference](https://github.com/NetApp/netapp.trident_protect).
 
 ## One-time AAP setup
 
