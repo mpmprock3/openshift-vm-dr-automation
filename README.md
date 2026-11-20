@@ -1,5 +1,7 @@
 # OpenShift VM disaster recovery automation
 
+**Current cleaned POC:** follow [the three-workflow operating guide](docs/CLEAN-POC.md). The legacy templates listed later in this README were removed from the current AAP instance; do not recreate them for this protection group.
+
 **Failback incident recovery:** use the [label-based recovery guide](docs/LABEL-RECOVERY.md) for the new dedicated-namespace path. The legacy failback workflow's site-specific PV/pod filters failed live Application reuse checks. Do not copy a DR filter onto a DC Application to bypass that check.
 
 **New or recreated clusters? Start with the [step-by-step rebuild guide](docs/REBUILD.md).** It covers prerequisites, optional ACM, AAP installation, credentials, all initial templates and surveys, replication, failover, acceptance tests and troubleshooting. The [bootstrap manifests](bootstrap/) contain the non-secret starting resources.
