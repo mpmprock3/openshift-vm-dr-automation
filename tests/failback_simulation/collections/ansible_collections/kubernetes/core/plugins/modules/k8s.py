@@ -27,6 +27,14 @@ else:
                 rows[:] = [x for x in rows if not (x['kind'] in ['VirtualMachine', 'VirtualMachineInstance', 'Pod'] and x['metadata']['name'] == 'centos-vm')]
     if o['kind'] == 'AppMirrorRelationship':
         o['status'] = {'state': 'Established', 'lastTransfer': {'completionTimestamp': '2026-11-20T00:00:00Z'}, 'lastTransferredSnapshot': {'name': 'baseline'}, 'conditions': [{'type': 'LastTransferSucceeded', 'status': 'True'}]}
+        # Like Trident Protect: an existing same-name destination Application is reused
+        # only when its definition matches the source Application.
+        other = 'dr' if site == 'dc' else 'dc'
+        dest = next((x for x in rows if x['kind'] == 'Application' and x['metadata']['name'] == o['spec']['sourceApplicationName'] and x['metadata'].get('namespace') == o['metadata']['namespace']), None)
+        src = next((x for x in db[other] if x['kind'] == 'Application' and x['metadata']['uid'] == o['spec']['sourceApplicationUID']), None)
+        if dest and src and dest['spec'].get('resourceFilter') != src['spec'].get('resourceFilter'):
+            msg = "Existing app definition is different that expected, cannot reuse the application '%s'" % dest['metadata']['name']
+            o['status'] = {'state': 'Establishing', 'error': msg, 'lastTransfer': {}, 'lastTransferredSnapshot': {}, 'conditions': [{'type': 'Established', 'status': 'False', 'reason': 'Error', 'message': msg}]}
     rows.append(o); changed = True
 with open(p, 'w') as f: json.dump(db, f)
 m.exit_json(changed=changed, result=o)

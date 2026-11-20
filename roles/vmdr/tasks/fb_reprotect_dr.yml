@@ -22,6 +22,17 @@
   loop: "{{ fb_destination_schedules.resources | selectattr('spec.applicationRef', 'equalto', reverse_plan.assessment.dr_application_name) | list }}"
   loop_control:
     loop_var: reverse_schedule
+- name: Align the DR Application so the forward relationship can reuse it
+  ansible.builtin.include_tasks: fb_align_destination_app.yml
+  vars:
+    align_app_namespace: "{{ reverse_plan.assessment.plan.mirror_namespace }}"
+    align_app_name: "{{ reverse_plan.assessment.dr_application_name }}"
+    align_app_uid: "{{ reverse_plan.assessment.dr_application_uid }}"
+    align_namespaces: "{{ reverse_plan.assessment.plan.namespace_mapping.values() | list | unique }}"
+    align_filter: "{{ fb_dc.dc_filter }}"
+    align_record_name: "{{ reverse_plan.reverse_name }}-dr-filter"
+    align_amr_name: "{{ reverse_plan.assessment.plan.mirror_name }}"
+    align_amr_source_uid: "{{ fb_dc.dc_application_uid }}"
 - name: Restore original direction using current DC application UID
   ansible.builtin.include_tasks: ensure.yml
   vars:

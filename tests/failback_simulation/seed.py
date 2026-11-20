@@ -28,5 +28,13 @@ rspec={**orig,'desiredState':'Established','sourceApplicationUID':'dr-app','name
 amr=obj('AppMirrorRelationship','reverse-test','my-vm','reverse-amr',rspec,status={'state':'Established','lastTransfer':{'completionTimestamp':'2026-11-20T00:00:00Z'},'lastTransferredSnapshot':{'name':'baseline'},'conditions':[{'type':'LastTransferSucceeded','status':'True'}]})
 unrelated=vm('my-vm','unrelated','Always');unrelated['metadata']['name']='test-vm';unrelated['spec']['template']['spec']['volumes'][0]['persistentVolumeClaim']['claimName']='test-vm'
 if '--shared-disk' in sys.argv: unrelated['spec']['template']['spec']['volumes'][0]['persistentVolumeClaim']['claimName']='centos-vm'
-s={'dc':[app('my-vm','dc-app'),vm('my-vm','dc-vm','Halted'),pvc('my-vm','dc-pvc'),vault,sc,vsc,pv,node,amr,unrelated,obj('Schedule','old-schedule','my-vm','old-schedule',{'applicationRef':'app'})], 'dr':[cm,cat,app('vmdr','dr-app'),vm('vmdr','dr-vm','Always'),pvc('vmdr','dr-pvc'),vault,snap,vs,vmi], 'unrelated':copy.deepcopy(unrelated),'fail_shutdown': '--fail-shutdown' in sys.argv}
+if '--app-reuse-mismatch' in sys.argv:
+    # Original DC Application still has its enrollment filter; the reverse AMR from an
+    # earlier attempt is stuck because Trident Protect refused to reuse it.
+    dcfilt={'resourceSelectionCriteria':'Include','resourceMatchers':[{'kind':'PersistentVolume','names':['pvc-dc-pvc']},{'kind':'PersistentVolumeClaim','names':['centos-vm'],'namespaces':['my-vm']},{'kind':'VirtualMachine','names':['centos-vm'],'namespaces':['my-vm']}]}
+    msg="Existing app definition is different that expected, cannot reuse the application 'app'"
+    amr['status']={'state':'Establishing','error':msg,'lastTransfer':{},'lastTransferredSnapshot':{},'conditions':[{'type':'Established','status':'False','reason':'Error','message':msg}]}
+dcapp=app('my-vm','dc-app')
+if '--app-reuse-mismatch' in sys.argv: dcapp['spec']['resourceFilter']=dcfilt
+s={'dc':[dcapp,vm('my-vm','dc-vm','Halted'),pvc('my-vm','dc-pvc'),vault,sc,vsc,pv,node,amr,unrelated,obj('Schedule','old-schedule','my-vm','old-schedule',{'applicationRef':'app'})], 'dr':[cm,cat,app('vmdr','dr-app'),vm('vmdr','dr-vm','Always'),pvc('vmdr','dr-pvc'),vault,snap,vs,vmi], 'unrelated':copy.deepcopy(unrelated),'fail_shutdown': '--fail-shutdown' in sys.argv}
 json.dump(s,open(sys.argv[1],'w'))
