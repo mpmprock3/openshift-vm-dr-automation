@@ -47,15 +47,19 @@ Fail Over to DR   (Workflow; created automatically)
 
 **Status at the end of the first lab.** Steps 1–11 worked on live clusters: AMR `Established` and DR PVC `Bound`. Step 12 reached the failover launch form, but **a live failover was never run**. Steps 11–12 are therefore the first real test. In the second lab, failover needed `protect_allow_emulation: true` because DR had no KVM nodes (step 5.3). Same-IP behaviour has not been verified.
 
-**Failback (step 13)** is partly implemented on `main`: preparing a DR baseline and **reverse replication DR → PROD** are automated. The **final cutover back to PROD is not implemented yet**, so after step 13, DR is still the active site. Reverse replication has only been tested against simulated responses; step 13 is its first live test.
+**Failback** has two parts. **Step 13 (AAP, automated on `main`)** prepares a DR baseline and reverses replication to DR → PROD; DR stays active. **Step 14 (manual `oc` commands, NetApp's documented procedure)** does the planned cutover back to PROD and optionally re-protects PROD → DR. Neither has run on live clusters yet; reverse replication has only been tested against simulated responses.
 
 ```text
+Step 13 (AAP)
 Prepare DR Failback Source   (Job Template; survey filled by Refresh Failback Choices)
 
 Configure Reverse Replication Workflow   (standalone Job Template; run it ONCE, it builds the next workflow)
 
 Establish Reverse Replication   (Workflow; created automatically)
   Inspect Reverse Source (DR) → Prepare Reverse Destination (PROD) → Release Promoted Relationship (DR) → Establish Reverse Mirror (PROD)
+
+Step 14 (manual oc)
+  Disable DR schedule → ShutdownSnapshot on DR → Promote reverse AMR on PROD at that snapshot → Start PROD VM → (optional) re-protect PROD → DR
 ```
 
 ---
@@ -473,7 +477,7 @@ virtctl console dr-demo-vm -n vmdr
 
 **What this does.** It keeps DR running and makes PROD the replication *target*. When it finishes, the DR VM's disks (including any changes made on DR after failover) are replicated back to PROD's original, stopped disks every few minutes.
 
-**What it does NOT do (not implemented yet).** It doesn't stop the DR VM, take a final shutdown snapshot, promote PROD or start the PROD VM. The final planned cutover is the next stage of development. **Until then, DR stays the active site after this step.**
+**What it does NOT do.** It doesn't stop the DR VM, take a final shutdown snapshot, promote PROD or start the PROD VM. That's the planned cutover in **step 14** (manual for now). **After step 13 alone, DR is still the active site.**
 
 **Before you start**
 
@@ -501,7 +505,7 @@ In the DR guest (`oc config use-context DR`, then `virtctl console dr-demo-vm -n
 date | sudo tee /root/written-on-dr.txt; sync
 ```
 
-Record the time. This file proves later that DR changes reach PROD. You can only check it on PROD after a cutover, which isn't automated yet. Until then it shows up as transferred data in the reverse relationship.
+Record the time. This file proves that DR changes reach PROD; you check it on PROD in step 14.5.
 
 ### 13.2 Create the failback preparation jobs (≈5 min, once)
 
@@ -604,12 +608,240 @@ oc --context=PROD get "$REV" -n default -o jsonpath='{.status.state}{"  "}{.stat
 
 - **Active site:** DR. **Replication:** DR → PROD every few minutes. **PROD VM:** stopped, disk being refreshed from DR.
 - **Don't start the PROD VM** and don't let other automation (GitOps, scripts) start it. That gives two active copies and the next transfer overwrites PROD's changes.
-- **Final cutover (stop DR, ShutdownSnapshot, promote on PROD, start PROD, re-protect PROD → DR) is not implemented.** Don't improvise it by editing AMRs by hand; wait for the cutover automation.
+- **The AAP automation stops here.** To bring the VM back to PROD, do the manual cutover in step 14 (NetApp's documented procedure). Don't improvise other AMR edits.
 - To repeat failback testing, start again from step 9 with a **new** VM, plan name and destination namespace. Repeated failback cycles on the same group aren't supported.
 
 ---
 
-## 14. Mistakes from the first lab and how to avoid them
+## 14. Failback, part 2: planned cutover back to PROD (manual, ⚠ first live test)
+
+This is NetApp's documented **"Reverse application replication direction"** procedure ([Trident Protect 26.02, SnapMirror replication](https://docs.netapp.com/us-en/trident-2602/trident-protect/trident-protect-use-snapmirror-replication.html)). Step 13 already did the first half of NetApp's failback ("reverse resync"). This step does the second half by hand with `oc`. **There's no AAP job for it yet.**
+
+What happens:
+
+1. Turn off the DR snapshot schedule.
+2. Create a **ShutdownSnapshot** on DR. Trident Protect saves the app's Kubernetes resources, **deletes them on DR (the DR VM stops and its VM object disappears; PVCs stay)**, snapshots the disks and replicates that final snapshot to PROD.
+3. **Promote** the reverse AMR on PROD **at exactly that snapshot**. Trident Protect breaks the mirror, makes the PROD disks writable and restores the VM definition on PROD.
+4. Start and verify the PROD VM.
+5. (Optional) Re-protect PROD → DR so you're back to the starting layout.
+
+> ⚠ **Downtime and risk.** From 14.3 until 14.5 the VM isn't running anywhere. Writes stop at the shutdown snapshot, so a successful run loses no data. If 14.4 fails, the VM stays down on both sides until you fix it. Its data is safe in the shutdown snapshot and on the DR and PROD PVCs, so **don't delete anything**. Try this with the demo VM first.
+
+Run every block from one terminal session: the `export` lines set variables that later blocks use. If you open a new terminal, re-run 14.1.
+
+### 14.1 Pre-checks and variables (read-only)
+
+```bash
+export REV=$(oc --context=PROD get appmirrorrelationships.protect.trident.netapp.io -n default -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep '^reverse-' | head -1)
+export DR_APP=$(oc --context=PROD get appmirrorrelationships.protect.trident.netapp.io "$REV" -n default -o jsonpath='{.spec.sourceApplicationName}')
+export DR_VAULT=$(oc --context=PROD get appmirrorrelationships.protect.trident.netapp.io "$REV" -n default -o jsonpath='{.spec.sourceAppVaultRef}')
+export PROD_VAULT=$(oc --context=PROD get appmirrorrelationships.protect.trident.netapp.io "$REV" -n default -o jsonpath='{.spec.destinationAppVaultRef}')
+export SC=$(oc --context=PROD get appmirrorrelationships.protect.trident.netapp.io "$REV" -n default -o jsonpath='{.spec.storageClassName}')
+export VM=dr-demo-vm
+echo "REV=$REV DR_APP=$DR_APP DR_VAULT=$DR_VAULT PROD_VAULT=$PROD_VAULT SC=$SC VM=$VM"
+```
+
+All values must be non-empty (expect `REV=reverse-<hash>`, `DR_VAULT=lab-vault`, `PROD_VAULT=lab-vault`, `SC=storage-class-iscsi`). Change `VM` if your VM has another name. Then check the state:
+
+```bash
+oc --context=PROD get appmirrorrelationships.protect.trident.netapp.io "$REV" -n default -o jsonpath='{.spec.desiredState}{" / "}{.status.state}{"  last="}{.status.lastTransferredSnapshot.name}{"\n"}'
+oc --context=DR get applications.protect.trident.netapp.io "$DR_APP" -n vmdr
+oc --context=DR get vm,vmi -n vmdr
+oc --context=PROD get vm,vmi -n default
+oc --context=DR get schedules.protect.trident.netapp.io -n vmdr
+```
+
+Pass when: the reverse AMR is `Established / Established` with a recent `last=` snapshot, the DR Application is `Ready`, the DR VMI is `Running`, and the PROD VM is `Stopped` with no VMI. **Don't continue otherwise.**
+
+Write a last marker in the DR guest so you can prove no data was lost:
+
+```bash
+date | sudo tee /root/last-write-on-dr.txt; sync
+```
+
+### 14.2 Disable the DR schedule (DR)
+
+NetApp requires source schedules to be off before the shutdown snapshot:
+
+```bash
+oc --context=DR get schedules.protect.trident.netapp.io -n vmdr -o custom-columns='NAME:.metadata.name,APP:.spec.applicationRef,ENABLED:.spec.enabled'
+oc --context=DR patch schedules.protect.trident.netapp.io "$REV-schedule" -n vmdr --type=merge -p '{"spec":{"enabled":false}}'
+oc --context=DR get schedules.protect.trident.netapp.io "$REV-schedule" -n vmdr -o jsonpath='{.spec.enabled}{"\n"}'
+```
+
+Must print `false`. If the first command lists any other schedule with `APP=$DR_APP`, disable it the same way.
+
+### 14.3 Shutdown snapshot on DR (⚠ the DR VM stops here)
+
+```bash
+export SDS=failback-shutdown-$(date +%Y%m%d%H%M)
+echo "$SDS"
+cat <<EOF | oc --context=DR apply -f -
+apiVersion: protect.trident.netapp.io/v1
+kind: ShutdownSnapshot
+metadata:
+  name: $SDS
+  namespace: vmdr
+spec:
+  appVaultRef: $DR_VAULT
+  applicationRef: $DR_APP
+EOF
+```
+
+Watch it until the state is `Completed` (Ctrl-C to stop watching):
+
+```bash
+oc --context=DR get shutdownsnapshots.protect.trident.netapp.io "$SDS" -n vmdr -w
+```
+
+Then record the archive name (the last part of `appArchivePath`):
+
+```bash
+export ARCHIVE=$(basename "$(oc --context=DR get shutdownsnapshots.protect.trident.netapp.io "$SDS" -n vmdr -o jsonpath='{.status.appArchivePath}')")
+echo "ARCHIVE=$ARCHIVE"
+oc --context=DR get vm,vmi,pvc -n vmdr
+```
+
+✅ `ARCHIVE` is non-empty, the DR VM/VMI are gone, and the DR PVCs are still `Bound`. If the state is `Failed`, run `oc --context=DR describe shutdownsnapshots.protect.trident.netapp.io "$SDS" -n vmdr` and stop; see 14.7.
+
+Wait until PROD has received that snapshot. The last transferred snapshot on the reverse AMR should change after the shutdown snapshot completed:
+
+```bash
+oc --context=PROD get appmirrorrelationships.protect.trident.netapp.io "$REV" -n default -o jsonpath='{.status.state}{"  last="}{.status.lastTransferredSnapshot.name}{"  at="}{.status.lastTransfer.completionTimestamp}{"\n"}'
+```
+
+### 14.4 Promote PROD at the shutdown snapshot (PROD)
+
+```bash
+oc --context=PROD patch appmirrorrelationships.protect.trident.netapp.io "$REV" -n default --type=merge -p "{\"spec\":{\"desiredState\":\"Promoted\",\"promotedSnapshot\":\"$ARCHIVE\"}}"
+oc --context=PROD get appmirrorrelationships.protect.trident.netapp.io "$REV" -n default -w
+```
+
+Wait for `STATE=Promoted` (Ctrl-C to stop watching). Then:
+
+```bash
+oc --context=PROD get appmirrorrelationships.protect.trident.netapp.io "$REV" -n default -o jsonpath='{.status.state}{"  app="}{.status.destinationApplicationRef}{"\n"}'
+export PROD_APP=$(oc --context=PROD get appmirrorrelationships.protect.trident.netapp.io "$REV" -n default -o jsonpath='{.status.destinationApplicationRef}')
+echo "PROD_APP=$PROD_APP"
+oc --context=PROD get applications.protect.trident.netapp.io -n default
+oc --context=PROD get vm,vmi,pvc -n default
+```
+
+✅ AMR `Promoted`, `PROD_APP` non-empty, the PROD PVCs `Bound`, and the VM object `default/dr-demo-vm` present.
+
+### 14.5 Start and verify the PROD VM (PROD)
+
+The restored VM definition comes from DR, so it may already be starting. If `oc --context=PROD get vmi -n default` shows nothing after a minute, start it:
+
+```bash
+oc --context=PROD patch vm "$VM" -n default --type=merge -p '{"spec":{"runStrategy":"Always"}}'
+oc --context=PROD get vmi -n default -w
+```
+
+When the VMI shows `Running` and `READY=True`, open the PROD console (`oc config use-context PROD`, then `virtctl console dr-demo-vm -n default`, or the web console) and check:
+
+```bash
+cat /root/dr-marker.txt /root/written-on-dr.txt /root/last-write-on-dr.txt
+ip -br addr
+```
+
+| Test | Pass when |
+|---|---|
+| One active site | PROD VMI `Running`/Ready; no VM or VMI in DR `vmdr` |
+| No data loss | all three marker files exist on PROD, including `last-write-on-dr.txt` from 14.1 |
+| Storage | reverse AMR `Promoted`; PROD PVCs `Bound` |
+| IP | same as step 6 (PROD network) |
+| Timing | record 14.3 start → PROD VM usable (the planned failback downtime) |
+
+**Failback is complete here.** PROD is active again, but **nothing is replicating to DR** until you do 14.6.
+
+### 14.6 (Optional) Re-protect PROD → DR (reverse resync)
+
+This restores the original direction using NetApp's "reverse resync" steps, re-using the existing DR PVCs in `vmdr` so only changes need to be sent.
+
+1. On PROD, delete the promoted reverse AMR. This makes PROD the source. It deletes only the relationship, not the VM or disks:
+   ```bash
+   oc --context=PROD delete appmirrorrelationships.protect.trident.netapp.io "$REV" -n default
+   ```
+2. On DR (now the destination), delete the disabled DR schedule. Schedules left on a destination cause snapshot failures:
+   ```bash
+   oc --context=DR delete schedules.protect.trident.netapp.io "$REV-schedule" -n vmdr
+   ```
+3. On DR, create the new PROD → DR relationship (5-minute interval, as in step 9):
+   ```bash
+   export PROD_APP_UID=$(oc --context=PROD get applications.protect.trident.netapp.io "$PROD_APP" -n default -o jsonpath='{.metadata.uid}')
+   echo "PROD_APP=$PROD_APP PROD_APP_UID=$PROD_APP_UID"
+   cat <<EOF | oc --context=DR apply -f -
+   apiVersion: protect.trident.netapp.io/v1
+   kind: AppMirrorRelationship
+   metadata:
+     name: $PROD_APP-reprotect
+     namespace: vmdr
+   spec:
+     desiredState: Established
+     sourceApplicationName: $PROD_APP
+     sourceApplicationUID: $PROD_APP_UID
+     sourceAppVaultRef: $PROD_VAULT
+     destinationAppVaultRef: $DR_VAULT
+     storageClassName: $SC
+     namespaceMapping:
+       - source: default
+         destination: vmdr
+     recurrenceRule: |-
+       DTSTART:20220101T000200Z
+       RRULE:FREQ=MINUTELY;INTERVAL=5
+   EOF
+   oc --context=DR get appmirrorrelationships.protect.trident.netapp.io "$PROD_APP-reprotect" -n vmdr -w
+   ```
+   Wait for `STATE=Established`.
+4. On PROD, turn the source snapshot schedule back on (same settings the automation uses):
+   ```bash
+   cat <<EOF | oc --context=PROD apply -f -
+   apiVersion: protect.trident.netapp.io/v1
+   kind: Schedule
+   metadata:
+     name: $PROD_APP-reprotect-schedule
+     namespace: default
+   spec:
+     applicationRef: $PROD_APP
+     appVaultRef: $PROD_VAULT
+     backupRetention: "0"
+     snapshotRetention: "3"
+     enabled: true
+     granularity: Custom
+     recurrenceRule: |-
+       DTSTART:20220101T000200Z
+       RRULE:FREQ=MINUTELY;INTERVAL=5
+   EOF
+   ```
+
+✅ **Checkpoint** (wait 10+ minutes):
+
+```bash
+oc --context=DR get appmirrorrelationships.protect.trident.netapp.io "$PROD_APP-reprotect" -n vmdr -o jsonpath='{.status.state}{"  last="}{.status.lastTransferredSnapshot.name}{"\n"}'
+oc --context=PROD get schedules.protect.trident.netapp.io,snapshots.protect.trident.netapp.io -n default
+oc --context=PROD get vmi -n default
+oc --context=DR get vm,vmi,pvc -n vmdr
+```
+
+AMR `Established` with `last=` advancing, PROD VMI still `Running`, DR PVCs `Bound` and no running DR VMI.
+
+**AAP limitation:** this re-protected relationship was created by hand, so it has no AAP recovery catalog. `Refresh Recovery Choices` won't list it, and **Fail Over to DR** can't use it. For another AAP-driven failover test, protect a new VM with a new plan and namespace from step 9. Automating 14.2–14.6 as an AAP workflow is the next development step.
+
+### 14.7 If something goes wrong
+
+| Where | Symptom | What to do |
+|---|---|---|
+| 14.1 | AMR not `Established` / no recent transfer | Don't start. Finish or fix step 13 first |
+| 14.3 | ShutdownSnapshot `Failed` | `oc --context=DR describe shutdownsnapshots.protect.trident.netapp.io "$SDS" -n vmdr` and `oc --context=DR logs -n trident-protect deploy/trident-protect-controller-manager --since=30m`. If the DR VM still exists, start it again on DR and re-enable the schedule (`... -p '{"spec":{"enabled":true}}'`). Don't promote PROD |
+| 14.3 | DR VM gone but `ARCHIVE` empty | Don't promote without `promotedSnapshot`. Re-check the ShutdownSnapshot status and controller logs |
+| 14.4 | AMR stuck in `Promoting` or `ERROR` set | `oc --context=PROD describe appmirrorrelationships.protect.trident.netapp.io "$REV" -n default` and PROD controller logs. **Don't** set it back to `Established` (that would overwrite PROD with older DR data). Open a NetApp case with the AMR and ShutdownSnapshot YAML if it doesn't clear |
+| 14.5 | VM restored but won't start | `oc --context=PROD describe vm "$VM" -n default`, `oc --context=PROD get events -n default --sort-by=.metadata.creationTimestamp`. Check PVCs are `Bound` |
+| 14.6 | Re-protect AMR stuck `Establishing` | Same checks as step 9. Never delete TMRs or finalizers |
+
+---
+
+## 15. Mistakes from the first lab and how to avoid them
 
 | What went wrong last time | Do this instead |
 |---|---|
@@ -632,12 +864,13 @@ oc --context=PROD get "$REV" -n default -o jsonpath='{.status.state}{"  "}{.stat
 | Unsure whether the failover setup is a workflow | It's a standalone **Job Template**, run once |
 | Expected the dropdowns to be live | Run *Refresh VM Choices* / *Refresh Recovery Choices*, then open a **new** form |
 | `Prepare DR Failover`: `No eligible DR virtualization node` (DR has KVM = 0) | Add `protect_allow_emulation: true` to the `DR-Automation` inventory (step 5.3), sync, relaunch with the same request ID |
-| Thought failback would bring the VM back to PROD | Step 13 only reverses replication; DR stays active. Final cutover isn't implemented. Keep the PROD VM stopped |
+| Thought step 13 would bring the VM back to PROD | Step 13 only reverses replication; DR stays active and the PROD VM must stay stopped. The cutover back to PROD is step 14 (manual) |
+| Promoted PROD without `promotedSnapshot`, or set an AMR back to `Established` to "fail back" | Always promote at the ShutdownSnapshot archive (step 14.4); `Established` on a promoted AMR overwrites with older data |
 | Wanted a 2-minute RPO | Not supported by this asynchronous design (5 minutes minimum on FlexVol). Treat it as a separate architecture topic with NetApp |
 
 ---
 
-## 15. Quick diagnostics
+## 16. Quick diagnostics
 
 ```bash
 oc --context=PROD logs -n trident-protect deploy/trident-protect-controller-manager --since=30m | tail -100
@@ -657,7 +890,7 @@ tridentctl-protect get app -n default
 
 `tridentctl-protect` was available on the lab bastion. If the Ansible-created Application misbehaves, a baseline test is `tridentctl-protect create app tp-baseline --namespaces default -n default` (with PROD as the current context). It should reach `Ready` within seconds. Delete it afterwards with `oc --context=PROD delete applications.protect.trident.netapp.io tp-baseline -n default`. More symptoms are covered in [REBUILD.md §15](REBUILD.md#15-troubleshooting-from-the-original-lab).
 
-## 16. Before the new cluster expires
+## 17. Before the new cluster expires
 
 - Note the Git commit, survey answers, AMR name and results somewhere outside the cluster.
 - If you want to keep AAP, take an **AnsibleAutomationPlatformBackup** and copy it **off the cluster**. A backup PVC on the same cluster dies with it.
