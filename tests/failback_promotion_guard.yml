@@ -1,0 +1,59 @@
+---
+- hosts: localhost
+  gather_facts: false
+  vars:
+    reverse_plan:
+      request_id: auto-one
+      assessment:
+        dr_application_name: app
+        dr_application_uid: dr-app
+    fb_preflight:
+      request_id: auto-one
+  tasks:
+    - ansible.builtin.set_fact:
+        good_shutdown:
+          request_id: auto-one
+          snapshot_uid: final-snapshot
+          archive: app_dr-app/snapshots/final-point
+          promoted_snapshot: final-point
+          checked_at: "{{ now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') }}"
+        rejected_wrong_request: false
+        rejected_wrong_archive: false
+        rejected_stale_evidence: false
+    - ansible.builtin.include_role:
+        name: vmdr
+        tasks_from: fb_promotion_guard
+      vars:
+        fb_shutdown: "{{ good_shutdown }}"
+    - block:
+        - ansible.builtin.include_role:
+            name: vmdr
+            tasks_from: fb_promotion_guard
+          vars:
+            fb_shutdown: "{{ good_shutdown | combine({'request_id': 'another-operation'}) }}"
+      rescue:
+        - ansible.builtin.set_fact:
+            rejected_wrong_request: true
+    - block:
+        - ansible.builtin.include_role:
+            name: vmdr
+            tasks_from: fb_promotion_guard
+          vars:
+            fb_shutdown: "{{ good_shutdown | combine({'archive': 'another_app/snapshots/final-point'}) }}"
+      rescue:
+        - ansible.builtin.set_fact:
+            rejected_wrong_archive: true
+    - block:
+        - ansible.builtin.include_role:
+            name: vmdr
+            tasks_from: fb_promotion_guard
+          vars:
+            fb_shutdown: "{{ good_shutdown | combine({'checked_at': '2020-01-01T00:00:00Z'}) }}"
+      rescue:
+        - ansible.builtin.set_fact:
+            rejected_stale_evidence: true
+    - ansible.builtin.assert:
+        that:
+          - rejected_wrong_request
+          - rejected_wrong_archive
+          - rejected_stale_evidence

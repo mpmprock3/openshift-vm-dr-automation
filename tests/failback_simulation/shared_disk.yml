@@ -1,0 +1,18 @@
+---
+- hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    reverse_plan:
+      assessment:
+        plan:
+          selected_vms:
+            - vm: my-vm/centos-vm
+              destination_namespace: vmdr
+              disks: [{pvc: centos-vm}]
+  tasks:
+    - ansible.builtin.include_role:
+        name: vmdr
+        tasks_from: fb_disk_exclusivity
+      vars:
+        fb_site: DC

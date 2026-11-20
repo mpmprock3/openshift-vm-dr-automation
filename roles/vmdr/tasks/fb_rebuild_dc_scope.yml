@@ -1,0 +1,49 @@
+---
+- name: Read recovered DC Application
+  kubernetes.core.k8s_info:
+    api_version: "{{ protect_api_version }}"
+    kind: Application
+    namespace: "{{ reverse_plan.assessment.plan.application_namespace }}"
+    name: "{{ reverse_plan.assessment.plan.application_name }}"
+  register: fb_dc_app
+- ansible.builtin.assert:
+    that:
+      - fb_dc_app.resources | length == 1
+      - fb_dc_app.resources[0].spec.includedNamespaces | map(attribute='namespace') | sort == reverse_plan.assessment.plan.namespace_mapping.keys() | list | sort
+- ansible.builtin.set_fact:
+    current_dr_members: []
+- name: Discover recovered VM incarnations
+  kubernetes.core.k8s_info:
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    namespace: "{{ item.vm.split('/')[0] }}"
+    name: "{{ item.vm.split('/')[1] }}"
+  loop: "{{ reverse_plan.assessment.plan.selected_vms }}"
+  register: fb_new_vms
+  no_log: true
+- ansible.builtin.set_fact:
+    current_dr_members: "{{ current_dr_members + [item.item | combine({'uid': item.resources[0].metadata.uid, 'destination_namespace': item.item.vm.split('/')[0]})] }}"
+  loop: "{{ fb_new_vms.results }}"
+  no_log: true
+- ansible.builtin.include_tasks: dependencies.yml
+  vars:
+    resolved_protection_plan:
+      selected_vms: "{{ current_dr_members }}"
+- ansible.builtin.set_fact:
+    failback_rebuilt_filter:
+      resourceSelectionCriteria: Include
+      resourceMatchers: "{{ resource_matchers | sort(attribute='kind') }}"
+- ansible.builtin.include_tasks: validate_failback_filter.yml
+- ansible.builtin.assert:
+    that: cluster_kinds | difference(fb_dc_app.resources[0].spec.includedClusterScopedResources | default([])) | length == 0
+- name: Correct restored DC selectors using only its current dependencies
+  kubernetes.core.k8s_json_patch:
+    api_version: "{{ protect_api_version }}"
+    kind: Application
+    namespace: "{{ fb_dc_app.resources[0].metadata.namespace }}"
+    name: "{{ fb_dc_app.resources[0].metadata.name }}"
+    patch:
+      - {op: test, path: /metadata/uid, value: "{{ fb_dc_app.resources[0].metadata.uid }}"}
+      - {op: test, path: /metadata/resourceVersion, value: "{{ fb_dc_app.resources[0].metadata.resourceVersion }}"}
+      - {op: add, path: /spec/resourceFilter, value: "{{ failback_rebuilt_filter }}"}
+  when: fb_dc_app.resources[0].spec.resourceFilter | default({}) != failback_rebuilt_filter

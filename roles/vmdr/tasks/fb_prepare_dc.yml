@@ -1,0 +1,10 @@
+---
+- ansible.builtin.assert:
+    that: cluster_api == reverse_plan.assessment.plan.source_api
+- name: Reject shared DC disks before reverse-replication mutations
+  ansible.builtin.include_tasks: fb_disk_exclusivity.yml
+  vars:
+    fb_site: DC
+- name: Prepare the reverse destination only before shutdown begins
+  ansible.builtin.include_tasks: reverse_destination.yml
+  when: not fb_context.resume | bool

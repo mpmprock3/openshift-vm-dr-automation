@@ -1,0 +1,41 @@
+---
+- name: Require previous cycle to have completed before replacing its retry record
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ConfigMap
+    namespace: "{{ reverse_plan.assessment.plan.mirror_namespace }}"
+    name: "cutover-{{ (reverse_plan.reverse_name | hash('sha256'))[:24] }}"
+  register: fb_previous_cycle
+- ansible.builtin.assert:
+    that:
+      - fb_previous_cycle.resources | length == 1
+      - (fb_previous_cycle.resources[0].data['state.json'] | from_json).phase == 'complete'
+      - (fb_previous_cycle.resources[0].data['state.json'] | from_json).request_id == reverse_plan.request_id
+    fail_msg: A different promotion exists but the previous failback is incomplete. Refusing to discard its retry record.
+- name: Preserve previous reverse record as history
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        namespace: "{{ reverse_plan.assessment.plan.mirror_namespace }}"
+        name: "{{ fb_reverse_record.resources[0].metadata.name }}-h-{{ (reverse_plan.reverse_name | hash('sha256'))[:8] }}"
+        labels:
+          app.kubernetes.io/managed-by: "{{ protect_owner }}"
+          app.kubernetes.io/component: failback-history
+      data: "{{ fb_reverse_record.resources[0].data }}"
+- name: Retire only the completed operation's reverse record
+  kubernetes.core.k8s:
+    state: absent
+    api_version: v1
+    kind: ConfigMap
+    namespace: "{{ fb_reverse_record.resources[0].metadata.namespace }}"
+    name: "{{ fb_reverse_record.resources[0].metadata.name }}"
+    delete_options:
+      preconditions:
+        uid: "{{ fb_reverse_record.resources[0].metadata.uid }}"
+        resourceVersion: "{{ fb_reverse_record.resources[0].metadata.resourceVersion }}"
+- ansible.builtin.include_tasks: assess_failback_dr.yml
+- ansible.builtin.include_tasks: prepare_dr_failback_source.yml
+- ansible.builtin.include_tasks: reverse_inspect.yml

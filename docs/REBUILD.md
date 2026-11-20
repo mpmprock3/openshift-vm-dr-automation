@@ -54,9 +54,9 @@ ACM is optional for this implementation. It provides cluster visibility; these j
 | Dynamic VM/namespace survey refresh | Both discovered VMs appeared after refresh |
 | Native Ansible protection and replication | Live AMR reached `Established`; DR VM disk PVC was `Bound` |
 | Failover workflow creation | Launch survey reached; API setup/retry also tested locally |
-| Actual VM failover and application recovery | Not yet confirmed by a successful live run |
+| Actual VM failover and application recovery | DR VM Running/Ready observed in the POC; guest/application data acceptance remains separate |
 | Same IP after recovery | Not yet verified; network and guest configuration are required |
-| Automated failback | Not implemented |
+| Automated failback | Implemented as a separate workflow; live validation required. See [FAILBACK.md](FAILBACK.md). |
 | Two-minute application RPO | Not demonstrated or guaranteed; this asynchronous POC rejects intervals below five minutes |
 
 Trident Protect was **26.02.0**, using Helm chart **100.2602.0**. The repository pins `kubernetes.core` **6.6.0**, requiring ansible-core **2.16+**. The previous reported OpenShift version is not a certified compatibility matrix. Verify the actual new cluster version and supported OpenShift Virtualization, ACM, AAP, Trident and ONTAP combination before installation. Do not silently replace the POC's Trident Protect release with the latest release and assume identical behavior.
@@ -437,7 +437,7 @@ Record each result in a private demo report:
 
 A green Ansible job is not by itself proof of IP preservation or application consistency. For DHCP, confirm reservation/MAC behavior for the actual Trident Protect version. For static IPs, verify the restored guest settings and DR network. This repository does not configure network stretching, routing changes or DNS updates.
 
-**Failback is not implemented.** Do not set the AMR back to Established or run Enable DR Protection over a promoted relationship to simulate failback. Keep the original source off and design/test the reverse replication and synchronization procedure separately. For repeated disposable demos, provision an isolated new test VM/plan/destination with the storage administrator's agreement rather than deleting active storage relationships blindly.
+**For data-preserving failback, install the separate Fail Back to DC workflow using [FAILBACK.md](FAILBACK.md).** It implements reverse replication, final shutdown snapshot, DC recovery, and forward re-protection. Do not reset the promoted AMR or run original protection enrollment to simulate failback. Validate guest data and the live backend before production use.
 
 ## 15. Troubleshooting from the original lab
 

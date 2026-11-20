@@ -1,0 +1,105 @@
+---
+- name: Require verified DC recovery from this operation
+  ansible.builtin.assert:
+    that:
+      - cluster_api == reverse_plan.source_api
+      - fb_dc.request_id == reverse_plan.request_id
+      - fb_dc.plan_hash == fb_context.plan_hash
+      - fb_dc.snapshot_uid == fb_shutdown.snapshot_uid
+- name: Recheck DR is offline before making it the destination
+  ansible.builtin.include_tasks: fb_stopped_vm.yml
+  loop: "{{ reverse_plan.assessment.plan.selected_vms }}"
+  loop_control:
+    loop_var: fb_member
+- name: Inspect DR schedules
+  kubernetes.core.k8s_info:
+    api_version: "{{ protect_api_version }}"
+    kind: Schedule
+    namespace: "{{ reverse_plan.assessment.plan.mirror_namespace }}"
+  register: fb_destination_schedules
+- name: Remove managed DR schedules now that DR is the destination
+  ansible.builtin.include_tasks: reverse_remove_schedule.yml
+  loop: "{{ fb_destination_schedules.resources | selectattr('spec.applicationRef', 'equalto', reverse_plan.assessment.dr_application_name) | list }}"
+  loop_control:
+    loop_var: reverse_schedule
+- name: Restore original direction using current DC application UID
+  ansible.builtin.include_tasks: ensure.yml
+  vars:
+    desired_resource:
+      apiVersion: "{{ protect_api_version }}"
+      kind: AppMirrorRelationship
+      metadata:
+        namespace: "{{ reverse_plan.assessment.plan.mirror_namespace }}"
+        name: "{{ reverse_plan.assessment.plan.mirror_name }}"
+        labels:
+          app.kubernetes.io/managed-by: "{{ protect_owner }}"
+      spec: "{{ reverse_plan.assessment.original_amr_spec | combine({'desiredState': 'Established', 'sourceApplicationUID': fb_dc.dc_application_uid}) | dict2items | rejectattr('key', 'equalto', 'promotedSnapshot') | items2dict }}"
+- ansible.builtin.set_fact:
+    fb_forward_uid: "{{ ensured_resource.metadata.uid }}"
+- ansible.builtin.include_tasks: wait.yml
+  vars:
+    wait_kind: AppMirrorRelationship
+    wait_namespace: "{{ reverse_plan.assessment.plan.mirror_namespace }}"
+    wait_name: "{{ reverse_plan.assessment.plan.mirror_name }}"
+    wait_state: Established
+- name: Require successful forward transfer before declaring protection restored
+  ansible.builtin.assert:
+    that:
+      - readiness.resources[0].metadata.uid == fb_forward_uid
+      - readiness.resources[0].status.lastTransfer.completionTimestamp is defined
+      - readiness.resources[0].status.lastTransferredSnapshot.name | default('') | length > 0
+      - readiness.resources[0].status.conditions | selectattr('type', 'equalto', 'LastTransferSucceeded') | selectattr('status', 'equalto', 'True') | list | length > 0
+- name: Build current recovery catalog for the next failover
+  ansible.builtin.set_fact:
+    fb_next_catalog: "{{ reverse_plan.assessment.plan | combine({'application_uid': fb_dc.dc_application_uid, 'selected_vms': fb_dc.members, 'schedule': fb_dc.schedule, 'mirror_uid': fb_forward_uid}) }}"
+- name: Read existing enrollment catalog
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ConfigMap
+    namespace: "{{ reverse_plan.assessment.plan.mirror_namespace }}"
+    name: "{{ reverse_plan.assessment.plan.mirror_name }}-plan"
+  register: fb_catalog
+- name: Reject unrelated catalog replacement
+  ansible.builtin.assert:
+    that:
+      - fb_catalog.resources | length == 1
+      - fb_catalog.resources[0].metadata.labels['app.kubernetes.io/managed-by'] | default('') == protect_owner
+      - (fb_catalog.resources[0].data['plan.json'] | from_json) in [reverse_plan.assessment.plan, fb_next_catalog]
+- name: Atomically update enrollment for recovered VM incarnations
+  kubernetes.core.k8s_json_patch:
+    api_version: v1
+    kind: ConfigMap
+    namespace: "{{ fb_catalog.resources[0].metadata.namespace }}"
+    name: "{{ fb_catalog.resources[0].metadata.name }}"
+    patch:
+      - {op: test, path: /metadata/uid, value: "{{ fb_catalog.resources[0].metadata.uid }}"}
+      - {op: test, path: /metadata/resourceVersion, value: "{{ fb_catalog.resources[0].metadata.resourceVersion }}"}
+      - {op: replace, path: /data/plan.json, value: "{{ fb_next_catalog | to_json(sort_keys=true) }}"}
+  when: (fb_catalog.resources[0].data['plan.json'] | from_json) != fb_next_catalog
+- name: Read journal before completion checkpoint
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ConfigMap
+    namespace: "{{ reverse_plan.assessment.plan.mirror_namespace }}"
+    name: "{{ fb_context.record_name }}"
+  register: fb_final_journal
+- name: Record complete recovery and forward protection
+  kubernetes.core.k8s_json_patch:
+    api_version: v1
+    kind: ConfigMap
+    namespace: "{{ reverse_plan.assessment.plan.mirror_namespace }}"
+    name: "{{ fb_context.record_name }}"
+    patch:
+      - {op: test, path: /metadata/uid, value: "{{ fb_final_journal.resources[0].metadata.uid }}"}
+      - {op: test, path: /metadata/resourceVersion, value: "{{ fb_final_journal.resources[0].metadata.resourceVersion }}"}
+      - op: replace
+        path: /data/state.json
+        value: "{{ (fb_final_journal.resources[0].data['state.json'] | from_json) | combine({'phase': 'complete', 'forward_uid': fb_forward_uid}) | to_json }}"
+- name: Report end-to-end failback result
+  ansible.builtin.debug:
+    msg:
+      result: DC VM recovery verified and DC-to-DR replication Established with a successful transfer.
+      recovered_vms: "{{ fb_dc.vm_report }}"
+      final_dr_recovery_point: "{{ fb_shutdown.promoted_snapshot }}"
+      forward_relationship: "{{ reverse_plan.assessment.plan.mirror_namespace }}/{{ reverse_plan.assessment.plan.mirror_name }}"
+      verification: VM disk references, Bound PVCs and Running/Ready VMIs checked. Guest data and application correctness require customer acceptance testing; an optional HTTP check is not proof of disk contents or database consistency.

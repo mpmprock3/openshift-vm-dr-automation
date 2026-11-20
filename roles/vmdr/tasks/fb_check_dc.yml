@@ -1,0 +1,72 @@
+---
+- ansible.builtin.assert:
+    that: cluster_api == reverse_plan.assessment.plan.source_api
+- name: Check enrolled disk exclusivity on DC
+  ansible.builtin.include_tasks: fb_disk_exclusivity.yml
+  vars:
+    fb_site: DC
+- name: Validate optional application check URL before shutdown
+  ansible.builtin.assert:
+    that: failback_health_url | default('') | length == 0 or failback_health_url is match('^https?://[^/]+')
+- name: Establish reverse replication before shutdown
+  ansible.builtin.include_tasks: reverse_establish.yml
+  when: not fb_context.resume | bool
+- name: Read DC recovery receipt for retries after promotion
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ConfigMap
+    namespace: "{{ reverse_plan.assessment.plan.application_namespace }}"
+    name: "{{ fb_context.record_name }}"
+  register: fb_dc_receipt
+- name: Validate existing receipt
+  ansible.builtin.assert:
+    that:
+      - fb_dc_receipt.resources[0].metadata.labels['app.kubernetes.io/managed-by'] | default('') == protect_owner
+      - (fb_dc_receipt.resources[0].data['result.json'] | from_json).request_id == reverse_plan.request_id
+      - (fb_dc_receipt.resources[0].data['result.json'] | from_json).plan_hash == fb_context.plan_hash
+  when: fb_dc_receipt.resources | length > 0
+- name: Inspect reverse relationship on DC
+  kubernetes.core.k8s_info:
+    api_version: "{{ protect_api_version }}"
+    kind: AppMirrorRelationship
+    namespace: "{{ reverse_plan.assessment.plan.application_namespace }}"
+    name: "{{ reverse_plan.reverse_name }}"
+  register: fb_reverse_amr
+- name: Require Established reverse relationship or this operation's promotion
+  ansible.builtin.assert:
+    that:
+      - fb_reverse_amr.resources | length == 1
+      - fb_reverse_amr.resources[0].spec.sourceApplicationUID == reverse_plan.assessment.dr_application_uid
+      - fb_reverse_amr.resources[0].spec.desiredState in ['Established', 'Promoted']
+      - fb_reverse_amr.resources[0].spec.desiredState != 'Promoted' or (fb_context.resume | bool and (fb_reverse_amr.resources[0].metadata.annotations | default({})).get('vmdr.aap/failback-id', '') == reverse_plan.request_id)
+      - fb_context.resume | bool or fb_reverse_amr.resources[0].status.state | default('') == 'Established'
+  when: fb_dc_receipt.resources | length == 0
+- name: Recheck original DC VMs remain stopped until promotion starts
+  ansible.builtin.include_tasks: assess_failback_dc.yml
+  vars:
+    failback_assessment: "{{ reverse_plan.assessment }}"
+  when:
+    - fb_dc_receipt.resources | length == 0
+    - fb_reverse_amr.resources | length == 1
+    - fb_reverse_amr.resources[0].spec.desiredState == 'Established'
+- name: Discover DC compute before taking DR offline
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Node
+  register: recovery_nodes
+- kubernetes.core.k8s_info:
+    api_version: kubevirt.io/v1
+    kind: KubeVirt
+    namespace: openshift-cnv
+  register: recovery_kubevirt
+  when: protect_allow_emulation | bool
+- ansible.builtin.include_tasks: recovery_compute.yml
+- name: Pass validated reverse identity
+  register: fb_stage_artifact
+  ansible.builtin.set_stats:
+    per_host: false
+    aggregate: false
+    data:
+      fb_preflight:
+        request_id: "{{ reverse_plan.request_id }}"
+        reverse_uid: "{{ fb_reverse_amr.resources[0].metadata.uid if fb_reverse_amr.resources | length else (fb_dc_receipt.resources[0].data['result.json'] | from_json).reverse_uid }}"

@@ -1,0 +1,215 @@
+---
+- ansible.builtin.assert:
+    that: cluster_api == reverse_plan.assessment.plan.source_api
+- ansible.builtin.include_tasks: fb_promotion_guard.yml
+- name: Read durable DC recovery receipt
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ConfigMap
+    namespace: "{{ reverse_plan.assessment.plan.application_namespace }}"
+    name: "{{ fb_context.record_name }}"
+  register: fb_receipt
+- name: Read reverse AMR before promotion or retry
+  kubernetes.core.k8s_info:
+    api_version: "{{ protect_api_version }}"
+    kind: AppMirrorRelationship
+    namespace: "{{ reverse_plan.assessment.plan.application_namespace }}"
+    name: "{{ reverse_plan.reverse_name }}"
+  register: fb_promote_amr
+- name: Promote exact final shutdown archive
+  when: fb_receipt.resources | length == 0
+  block:
+    - name: Require original reverse relationship and matching retry intent
+      ansible.builtin.assert:
+        that:
+          - fb_promote_amr.resources | length == 1
+          - fb_promote_amr.resources[0].metadata.uid == fb_preflight.reverse_uid
+          - fb_promote_amr.resources[0].spec.sourceApplicationUID == reverse_plan.assessment.dr_application_uid
+          - fb_promote_amr.resources[0].spec.desiredState in ['Established', 'Promoted']
+          - fb_promote_amr.resources[0].spec.desiredState != 'Promoted' or ((fb_promote_amr.resources[0].metadata.annotations | default({})).get('vmdr.aap/failback-id', '') == reverse_plan.request_id and fb_promote_amr.resources[0].spec.promotedSnapshot | default('') == fb_shutdown.promoted_snapshot)
+    - name: Atomically select final archive and request promotion
+      kubernetes.core.k8s_json_patch:
+        api_version: "{{ protect_api_version }}"
+        kind: AppMirrorRelationship
+        namespace: "{{ reverse_plan.assessment.plan.application_namespace }}"
+        name: "{{ reverse_plan.reverse_name }}"
+        patch:
+          - {op: test, path: /metadata/uid, value: "{{ fb_preflight.reverse_uid }}"}
+          - {op: test, path: /metadata/resourceVersion, value: "{{ fb_promote_amr.resources[0].metadata.resourceVersion }}"}
+          - {op: test, path: /spec/desiredState, value: Established}
+          - {op: add, path: /spec/promotedSnapshot, value: "{{ fb_shutdown.promoted_snapshot }}"}
+          - op: add
+            path: /metadata/annotations
+            value: "{{ fb_promote_amr.resources[0].metadata.annotations | default({}) | combine({'vmdr.aap/failback-id': reverse_plan.request_id}) }}"
+          - {op: replace, path: /spec/desiredState, value: Promoted}
+      when: fb_promote_amr.resources[0].spec.desiredState == 'Established'
+    - ansible.builtin.include_tasks: wait.yml
+      vars:
+        wait_kind: AppMirrorRelationship
+        wait_namespace: "{{ reverse_plan.assessment.plan.application_namespace }}"
+        wait_name: "{{ reverse_plan.reverse_name }}"
+        wait_state: Promoted
+    - name: Require completion for the selected final archive
+      ansible.builtin.assert:
+        that:
+          - readiness.resources[0].metadata.uid == fb_preflight.reverse_uid
+          - readiness.resources[0].spec.promotedSnapshot == fb_shutdown.promoted_snapshot
+          - readiness.resources[0].status.conditions | selectattr('type', 'equalto', 'Promoted') | selectattr('status', 'equalto', 'True') | list | length > 0
+- name: Validate existing receipt before skipping promotion
+  ansible.builtin.assert:
+    that:
+      - fb_receipt.resources[0].metadata.labels['app.kubernetes.io/managed-by'] | default('') == protect_owner
+      - (fb_receipt.resources[0].data['result.json'] | from_json).request_id == reverse_plan.request_id
+      - (fb_receipt.resources[0].data['result.json'] | from_json).plan_hash == fb_context.plan_hash
+      - (fb_receipt.resources[0].data['result.json'] | from_json).snapshot_uid == fb_shutdown.snapshot_uid
+      - (fb_receipt.resources[0].data['result.json'] | from_json).promoted_snapshot == fb_shutdown.promoted_snapshot
+  when: fb_receipt.resources | length > 0
+- name: Verify receipt VM identities before any retry start request
+  kubernetes.core.k8s_info:
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    namespace: "{{ item.vm.split('/')[0] }}"
+    name: "{{ item.vm.split('/')[1] }}"
+  loop: "{{ (fb_receipt.resources[0].data['result.json'] | from_json).members if fb_receipt.resources | length else [] }}"
+  register: fb_receipt_vm
+  failed_when: fb_receipt_vm.resources | length != 1 or fb_receipt_vm.resources[0].metadata.uid != item.uid
+  no_log: true
+- ansible.builtin.set_fact:
+    recovered_vm_report: []
+- name: Verify recovered DC VMs and start them if required
+  ansible.builtin.include_tasks: verify_recovered_vm.yml
+  loop: "{{ reverse_plan.assessment.plan.selected_vms }}"
+  loop_control:
+    loop_var: fb_original_member
+  vars:
+    recovered_vm: "{{ fb_original_member | combine({'destination_namespace': fb_original_member.vm.split('/')[0]}) }}"
+- name: Optionally check application endpoint after DC recovery
+  ansible.builtin.uri:
+    url: "{{ failback_health_url }}"
+    method: GET
+    status_code: [200]
+    follow_redirects: none
+    use_netrc: false
+    timeout: 30
+  register: fb_health
+  until: fb_health.status | default(0) == 200
+  retries: 20
+  delay: 10
+  when: failback_health_url | default('') | length > 0
+- name: Rebuild current DC selection before restoring protection
+  ansible.builtin.include_tasks: fb_rebuild_dc_scope.yml
+- name: Build refreshed catalog VM membership
+  ansible.builtin.set_fact:
+    fb_catalog_members: []
+- ansible.builtin.set_fact:
+    fb_catalog_members: "{{ fb_catalog_members + [item | combine({'destination_namespace': reverse_plan.assessment.plan.namespace_mapping[item.vm.split('/')[0]]})] }}"
+  loop: "{{ current_dr_members }}"
+- name: Prepare DC result for durable retry
+  ansible.builtin.set_fact:
+    fb_dc_result:
+      request_id: "{{ reverse_plan.request_id }}"
+      plan_hash: "{{ fb_context.plan_hash }}"
+      reverse_uid: "{{ fb_preflight.reverse_uid }}"
+      snapshot_uid: "{{ fb_shutdown.snapshot_uid }}"
+      promoted_snapshot: "{{ fb_shutdown.promoted_snapshot }}"
+      dc_application_uid: "{{ fb_dc_app.resources[0].metadata.uid }}"
+      members: "{{ fb_catalog_members }}"
+      baseline: "{{ fb_context.record_name }}-dc"
+      schedule: "{{ fb_context.record_name }}-schedule"
+      vm_report: "{{ recovered_vm_report }}"
+- name: Refuse receipt mismatch after a workload was replaced
+  ansible.builtin.assert:
+    that:
+      - (fb_receipt.resources[0].data['result.json'] | from_json).dc_application_uid == fb_dc_result.dc_application_uid
+      - (fb_receipt.resources[0].data['result.json'] | from_json).members == fb_dc_result.members
+  when: fb_receipt.resources | length > 0
+- name: Persist recovered DC identities before releasing reverse relationship
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        namespace: "{{ reverse_plan.assessment.plan.application_namespace }}"
+        name: "{{ fb_context.record_name }}"
+        labels:
+          app.kubernetes.io/managed-by: "{{ protect_owner }}"
+          app.kubernetes.io/component: failback-receipt
+      data:
+        result.json: "{{ fb_dc_result | to_json }}"
+  when: fb_receipt.resources | length == 0
+- name: Re-read promoted reverse relationship before release
+  kubernetes.core.k8s_info:
+    api_version: "{{ protect_api_version }}"
+    kind: AppMirrorRelationship
+    namespace: "{{ reverse_plan.assessment.plan.application_namespace }}"
+    name: "{{ reverse_plan.reverse_name }}"
+  register: fb_release_reverse
+- name: Require this operation's completed promotion
+  ansible.builtin.assert:
+    that:
+      - fb_release_reverse.resources[0].metadata.uid == fb_preflight.reverse_uid
+      - fb_release_reverse.resources[0].status.state == 'Promoted'
+      - fb_release_reverse.resources[0].spec.promotedSnapshot == fb_shutdown.promoted_snapshot
+      - fb_release_reverse.resources[0].metadata.annotations['vmdr.aap/failback-id'] == reverse_plan.request_id
+  when: fb_release_reverse.resources | length > 0
+- name: Release reverse AMR so recovered DC becomes protection source
+  kubernetes.core.k8s:
+    state: absent
+    api_version: "{{ protect_api_version }}"
+    kind: AppMirrorRelationship
+    namespace: "{{ reverse_plan.assessment.plan.application_namespace }}"
+    name: "{{ reverse_plan.reverse_name }}"
+    delete_options:
+      preconditions:
+        uid: "{{ fb_release_reverse.resources[0].metadata.uid }}"
+        resourceVersion: "{{ fb_release_reverse.resources[0].metadata.resourceVersion }}"
+    wait: true
+    wait_timeout: "{{ protect_wait_seconds }}"
+  when: fb_release_reverse.resources | length > 0
+- name: Create DC baseline snapshot for renewed forward replication
+  ansible.builtin.include_tasks: ensure.yml
+  vars:
+    desired_resource:
+      apiVersion: "{{ protect_api_version }}"
+      kind: Snapshot
+      metadata:
+        namespace: "{{ reverse_plan.assessment.plan.application_namespace }}"
+        name: "{{ fb_dc_result.baseline }}"
+        labels:
+          app.kubernetes.io/managed-by: "{{ protect_owner }}"
+      spec:
+        applicationRef: "{{ reverse_plan.assessment.plan.application_name }}"
+        appVaultRef: "{{ reverse_plan.assessment.original_amr_spec.sourceAppVaultRef }}"
+        reclaimPolicy: Retain
+- ansible.builtin.include_tasks: wait.yml
+  vars:
+    wait_kind: Snapshot
+    wait_namespace: "{{ reverse_plan.assessment.plan.application_namespace }}"
+    wait_name: "{{ fb_dc_result.baseline }}"
+    wait_state: Completed
+- name: Restore ongoing DC snapshot schedule
+  ansible.builtin.include_tasks: ensure.yml
+  vars:
+    desired_resource:
+      apiVersion: "{{ protect_api_version }}"
+      kind: Schedule
+      metadata:
+        namespace: "{{ reverse_plan.assessment.plan.application_namespace }}"
+        name: "{{ fb_dc_result.schedule }}"
+        labels:
+          app.kubernetes.io/managed-by: "{{ protect_owner }}"
+      spec:
+        applicationRef: "{{ reverse_plan.assessment.plan.application_name }}"
+        appVaultRef: "{{ reverse_plan.assessment.original_amr_spec.sourceAppVaultRef }}"
+        backupRetention: '0'
+        snapshotRetention: '3'
+        enabled: true
+        granularity: Custom
+        recurrenceRule: "{{ reverse_plan.assessment.original_amr_spec.recurrenceRule }}"
+- register: fb_stage_artifact
+  ansible.builtin.set_stats:
+    per_host: false
+    aggregate: false
+    data:
+      fb_dc: "{{ fb_dc_result }}"

@@ -158,7 +158,7 @@ The reported snapshot completion age uses Trident Protect 26.02 `status.lastTran
 
 The node check is a basic prerequisite, not a full scheduler/capacity reservation or a network equivalence test. No MAC-retention annotation from newer Trident releases is applied to 26.02. Reported guest interfaces do not prove IP preservation or external connectivity. A successful HTTP check from AAP also does not prove database transaction integrity or access from all customer networks.
 
-Before a production commitment, verify capacity, network attachments, guest addressing, application dependencies, fencing, data freshness and failback under realistic workloads. Failback is a separate workflow and is not implemented here; ordinary resync can discard DR-side changes.
+Before a production commitment, verify capacity, network attachments, guest addressing, application dependencies, fencing, data freshness and failback under realistic workloads. Failback is provided by the separate **Fail Back to DC** workflow; see [the failback guide](docs/FAILBACK.md). It requires live qualification; ordinary resync can discard DR-side changes.
 
 ### Failover verification coverage
 
@@ -188,6 +188,6 @@ oc --context=DR get nodes -L kubevirt.io/schedulable
 
 Local regression coverage: `ANSIBLE_ROLES_PATH=roles ansible-playbook -i localhost, tests/compute.yml`. The emulation branch has local test coverage; live DR recovery still needs to be verified in the lab.
 
-### Data-preserving failback preparation
+### Data-preserving failback
 
-See [FAILBACK.md](docs/FAILBACK.md) for the native Ansible DR scope repair, baseline snapshot job, and read-only DC/DR assessments. The separate reverse-replication workflow is now available with local simulated validation; final VM cutover is not yet implemented. See the same guide for setup and operational boundaries.
+See [FAILBACK.md](docs/FAILBACK.md) to install the **Fail Back to DC** AAP workflow with `configure_failback_workflow.yml`. It covers reverse replication, a final ShutdownSnapshot, DC promotion and verification, and restoration of DC-to-DR protection. Operators select a discovered group; tracking IDs are automatic. Local simulated tests do not replace live NetApp and guest-data acceptance testing.

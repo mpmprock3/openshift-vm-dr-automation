@@ -1,0 +1,11 @@
+---
+- name: Exercise failback and complete-operation retry using a disposable API double
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    recovery_target: vmdr/app-mirror
+  tasks:
+    - ansible.builtin.include_tasks: cycle.yml
+    - name: Retry the same completed operation
+      ansible.builtin.include_tasks: cycle.yml

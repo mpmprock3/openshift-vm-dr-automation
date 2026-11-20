@@ -1,0 +1,14 @@
+---
+- name: Require fresh source shutdown evidence for this exact operation
+  ansible.builtin.assert:
+    that:
+      - fb_shutdown.request_id == reverse_plan.request_id
+      - fb_preflight.request_id == reverse_plan.request_id
+      - fb_shutdown.snapshot_uid | length > 0
+      - fb_shutdown.promoted_snapshot == fb_shutdown.archive.split('/') | last
+      - fb_shutdown.archive.startswith(reverse_plan.assessment.dr_application_name ~ '_' ~ reverse_plan.assessment.dr_application_uid ~ '/')
+      - evidence_age | int >= 0
+      - evidence_age | int <= 900
+    fail_msg: Missing, mismatched or stale shutdown evidence. Rerun the full Fail Back to DC workflow to recheck DR isolation.
+  vars:
+    evidence_age: "{{ ((now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') | to_datetime('%Y-%m-%dT%H:%M:%SZ')) - (fb_shutdown.checked_at | to_datetime('%Y-%m-%dT%H:%M:%SZ'))).total_seconds() | int }}"

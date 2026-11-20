@@ -1,0 +1,80 @@
+---
+- ansible.builtin.include_tasks: resolve_failback_selection.yml
+- ansible.builtin.assert:
+    that: recovery_target | default('') is match('^[a-z0-9][a-z0-9-]*/[a-z0-9][a-z0-9.-]*[a-z0-9]$')
+- name: Read reverse operation record
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ConfigMap
+    namespace: "{{ recovery_target.split('/')[0] }}"
+    name: "reverse-{{ (recovery_target | hash('sha256'))[:24] }}"
+  register: fb_reverse_record
+- name: Prepare current DR scope and baseline for a new operation
+  when: fb_reverse_record.resources | length == 0
+  block:
+    - ansible.builtin.include_tasks: assess_failback_dr.yml
+    - ansible.builtin.include_tasks: prepare_dr_failback_source.yml
+    - ansible.builtin.include_tasks: reverse_inspect.yml
+- name: Load existing reverse operation
+  when: fb_reverse_record.resources | length == 1
+  block:
+    - ansible.builtin.assert:
+        that: fb_reverse_record.resources[0].metadata.labels['app.kubernetes.io/managed-by'] | default('') == protect_owner
+    - ansible.builtin.set_fact:
+        reverse_plan: "{{ fb_reverse_record.resources[0].data['plan.json'] | from_json }}"
+- name: Require matching DR endpoint and target
+  ansible.builtin.assert:
+    that:
+      - reverse_plan.source_api == cluster_api
+      - reverse_plan.target == recovery_target
+- name: Inspect current forward AMR to detect a later failover cycle
+  kubernetes.core.k8s_info:
+    api_version: "{{ protect_api_version }}"
+    kind: AppMirrorRelationship
+    namespace: "{{ recovery_target.split('/')[0] }}"
+    name: "{{ recovery_target.split('/')[1] }}"
+  register: fb_current_cycle_amr
+- name: Archive completed operation before a new promotion cycle
+  ansible.builtin.include_tasks: fb_new_cycle.yml
+  when:
+    - fb_reverse_record.resources | length == 1
+    - fb_current_cycle_amr.resources | length == 1
+    - fb_current_cycle_amr.resources[0].spec.desiredState == 'Promoted'
+    - fb_current_cycle_amr.resources[0].metadata.uid != reverse_plan.assessment.original_amr_uid
+- name: Derive internal cutover identity
+  ansible.builtin.set_fact:
+    fb_record_name: "cutover-{{ (reverse_plan.reverse_name | hash('sha256'))[:24] }}"
+- name: Read durable cutover journal
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ConfigMap
+    namespace: "{{ reverse_plan.assessment.plan.mirror_namespace }}"
+    name: "{{ fb_record_name }}"
+  register: fb_journal
+- name: Validate journal ownership and operation
+  ansible.builtin.assert:
+    that:
+      - fb_journal.resources[0].metadata.labels['app.kubernetes.io/managed-by'] | default('') == protect_owner
+      - (fb_journal.resources[0].data['state.json'] | from_json).request_id == reverse_plan.request_id
+      - (fb_journal.resources[0].data['state.json'] | from_json).plan_hash == reverse_plan | to_json(sort_keys=true) | hash('sha256')
+  when: fb_journal.resources | length > 0
+- name: Check active DR and baseline before first shutdown
+  ansible.builtin.include_tasks: reverse_verify_source.yml
+  when: fb_journal.resources | length == 0
+- name: Check enrolled disk exclusivity on DR
+  ansible.builtin.include_tasks: fb_disk_exclusivity.yml
+  vars:
+    fb_site: DR
+- name: Pass immutable context to all later stages
+  register: fb_stage_artifact
+  ansible.builtin.set_stats:
+    per_host: false
+    aggregate: false
+    data:
+      reverse_plan: "{{ reverse_plan }}"
+      failback_assessment: "{{ reverse_plan.assessment }}"
+      fb_context:
+        record_name: "{{ fb_record_name }}"
+        snapshot_name: "{{ fb_record_name }}-stop"
+        resume: "{{ fb_journal.resources | length == 1 }}"
+        plan_hash: "{{ reverse_plan | to_json(sort_keys=true) | hash('sha256') }}"

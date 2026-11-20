@@ -1,0 +1,24 @@
+---
+- name: Require no remaining source VMI
+  kubernetes.core.k8s_info:
+    api_version: kubevirt.io/v1
+    kind: VirtualMachineInstance
+    namespace: "{{ fb_member.destination_namespace }}"
+    name: "{{ fb_member.vm.split('/')[1] }}"
+  register: fb_off_vmi
+  until: fb_off_vmi.resources | length == 0
+  retries: 60
+  delay: 5
+  no_log: true
+- name: Read remaining source VM definition
+  kubernetes.core.k8s_info:
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    namespace: "{{ fb_member.destination_namespace }}"
+    name: "{{ fb_member.vm.split('/')[1] }}"
+  register: fb_off_vm
+  no_log: true
+- name: Reject a source VM capable of restarting automatically
+  ansible.builtin.assert:
+    that: fb_off_vm.resources | length == 0 or fb_off_vm.resources[0].spec.runStrategy | default('Halted' if not fb_off_vm.resources[0].spec.running | default(false) else 'Always') == 'Halted'
+    fail_msg: Source VM remains configured to run after ShutdownSnapshot. DC promotion is blocked.

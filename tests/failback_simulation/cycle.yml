@@ -1,0 +1,61 @@
+---
+- ansible.builtin.set_fact:
+    cluster_api: https://dr
+- ansible.builtin.include_role:
+    name: vmdr
+    tasks_from: fb_begin
+    apply:
+      environment: {VMDR_TEST_SITE: dr}
+- ansible.builtin.set_fact:
+    fb_context: "{{ fb_stage_artifact.ansible_stats.data.fb_context }}"
+- ansible.builtin.set_fact:
+    cluster_api: https://dc
+- ansible.builtin.include_role:
+    name: vmdr
+    tasks_from: fb_prepare_dc
+    apply:
+      environment: {VMDR_TEST_SITE: dc}
+- name: Emulate AAP passing the existing reverse stage artifact
+  ansible.builtin.set_fact:
+    reverse_dc_ready:
+      request_id: "{{ reverse_plan.request_id }}"
+      storage_class: storage-class-iscsi
+      source_api: https://dc
+    cluster_api: https://dr
+- ansible.builtin.include_role:
+    name: vmdr
+    tasks_from: fb_release_dr
+    apply:
+      environment: {VMDR_TEST_SITE: dr}
+- ansible.builtin.set_fact:
+    reverse_dr_released: "{{ reverse_plan.request_id }}"
+    cluster_api: https://dc
+- ansible.builtin.include_role:
+    name: vmdr
+    tasks_from: fb_check_dc
+    apply:
+      environment: {VMDR_TEST_SITE: dc}
+- ansible.builtin.set_fact:
+    fb_preflight: "{{ fb_stage_artifact.ansible_stats.data.fb_preflight }}"
+    cluster_api: https://dr
+- ansible.builtin.include_role:
+    name: vmdr
+    tasks_from: fb_shutdown
+    apply:
+      environment: {VMDR_TEST_SITE: dr}
+- ansible.builtin.set_fact:
+    fb_shutdown: "{{ fb_stage_artifact.ansible_stats.data.fb_shutdown }}"
+    cluster_api: https://dc
+- ansible.builtin.include_role:
+    name: vmdr
+    tasks_from: fb_recover_dc
+    apply:
+      environment: {VMDR_TEST_SITE: dc}
+- ansible.builtin.set_fact:
+    fb_dc: "{{ fb_stage_artifact.ansible_stats.data.fb_dc }}"
+    cluster_api: https://dr
+- ansible.builtin.include_role:
+    name: vmdr
+    tasks_from: fb_reprotect_dr
+    apply:
+      environment: {VMDR_TEST_SITE: dr}

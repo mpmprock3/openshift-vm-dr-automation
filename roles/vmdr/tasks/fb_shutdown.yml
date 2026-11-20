@@ -1,0 +1,164 @@
+---
+- ansible.builtin.assert:
+    that:
+      - cluster_api == reverse_plan.source_api
+      - fb_preflight.request_id == reverse_plan.request_id
+- name: Read cutover intent
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ConfigMap
+    namespace: "{{ reverse_plan.assessment.plan.mirror_namespace }}"
+    name: "{{ fb_context.record_name }}"
+  register: fb_shutdown_journal
+- name: Require journal to match the reverse relationship being promoted
+  ansible.builtin.assert:
+    that:
+      - (fb_shutdown_journal.resources[0].data['state.json'] | from_json).reverse_uid == fb_preflight.reverse_uid
+      - (fb_shutdown_journal.resources[0].data['state.json'] | from_json).plan_hash == fb_context.plan_hash
+  when: fb_shutdown_journal.resources | length > 0
+- name: Verify active source before recording first shutdown intent
+  ansible.builtin.include_tasks: reverse_verify_source.yml
+  when: fb_shutdown_journal.resources | length == 0
+- name: Record durable shutdown intent before any shutdown mutation
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        namespace: "{{ reverse_plan.assessment.plan.mirror_namespace }}"
+        name: "{{ fb_context.record_name }}"
+        labels:
+          app.kubernetes.io/managed-by: "{{ protect_owner }}"
+          app.kubernetes.io/component: failback-journal
+      data:
+        state.json: "{{ {'request_id': reverse_plan.request_id, 'plan_hash': fb_context.plan_hash, 'phase': 'shutdown_requested', 'snapshot_name': fb_context.snapshot_name, 'reverse_uid': fb_preflight.reverse_uid} | to_json }}"
+  when: fb_shutdown_journal.resources | length == 0
+- name: Read source application before creating or continuing shutdown
+  kubernetes.core.k8s_info:
+    api_version: "{{ protect_api_version }}"
+    kind: Application
+    namespace: "{{ reverse_plan.assessment.plan.mirror_namespace }}"
+    name: "{{ reverse_plan.assessment.dr_application_name }}"
+  register: fb_shutdown_app
+- name: Validate shutdown application identity and scope
+  ansible.builtin.include_tasks: fb_shutdown_app_guard.yml
+  when: fb_shutdown_journal.resources | length == 0 or (fb_shutdown_journal.resources[0].data['state.json'] | from_json).phase == 'shutdown_requested'
+- name: Read source schedules
+  kubernetes.core.k8s_info:
+    api_version: "{{ protect_api_version }}"
+    kind: Schedule
+    namespace: "{{ reverse_plan.assessment.plan.mirror_namespace }}"
+  register: fb_source_schedules
+- name: Refuse to modify schedules outside this automation's ownership
+  ansible.builtin.assert:
+    that: item.metadata.labels['app.kubernetes.io/managed-by'] | default('') == protect_owner
+  loop: "{{ fb_source_schedules.resources | selectattr('spec.applicationRef', 'equalto', reverse_plan.assessment.dr_application_name) | list }}"
+- name: Disable source application schedules
+  kubernetes.core.k8s_json_patch:
+    api_version: "{{ protect_api_version }}"
+    kind: Schedule
+    namespace: "{{ item.metadata.namespace }}"
+    name: "{{ item.metadata.name }}"
+    patch:
+      - {op: test, path: /metadata/uid, value: "{{ item.metadata.uid }}"}
+      - {op: test, path: /metadata/resourceVersion, value: "{{ item.metadata.resourceVersion }}"}
+      - {op: add, path: /spec/enabled, value: false}
+  loop: "{{ fb_source_schedules.resources | selectattr('spec.applicationRef', 'equalto', reverse_plan.assessment.dr_application_name) | list }}"
+  when:
+    - item.spec.enabled | default(true) | bool
+    - fb_shutdown_journal.resources | length == 0 or (fb_shutdown_journal.resources[0].data['state.json'] | from_json).phase == 'shutdown_requested'
+- name: Read previously created final snapshot
+  kubernetes.core.k8s_info:
+    api_version: "{{ protect_api_version }}"
+    kind: ShutdownSnapshot
+    namespace: "{{ reverse_plan.assessment.plan.mirror_namespace }}"
+    name: "{{ fb_context.snapshot_name }}"
+  register: fb_existing_shutdown
+- name: Refuse replacement of an already completed final recovery point
+  ansible.builtin.assert:
+    that:
+      - fb_existing_shutdown.resources | length == 1
+      - fb_existing_shutdown.resources[0].metadata.uid == (fb_shutdown_journal.resources[0].data['state.json'] | from_json).snapshot_uid
+  when:
+    - fb_shutdown_journal.resources | length > 0
+    - (fb_shutdown_journal.resources[0].data['state.json'] | from_json).phase in ['shutdown_completed', 'complete']
+- name: Create or reuse this operation's final shutdown snapshot
+  ansible.builtin.include_tasks: ensure.yml
+  vars:
+    desired_resource:
+      apiVersion: "{{ protect_api_version }}"
+      kind: ShutdownSnapshot
+      metadata:
+        namespace: "{{ reverse_plan.assessment.plan.mirror_namespace }}"
+        name: "{{ fb_context.snapshot_name }}"
+        labels:
+          app.kubernetes.io/managed-by: "{{ protect_owner }}"
+      spec:
+        applicationRef: "{{ reverse_plan.assessment.dr_application_name }}"
+        appVaultRef: "{{ reverse_plan.assessment.original_amr_spec.destinationAppVaultRef }}"
+        reclaimPolicy: Retain
+        cleanupSnapshot: false
+- ansible.builtin.include_tasks: wait.yml
+  vars:
+    wait_kind: ShutdownSnapshot
+    wait_namespace: "{{ reverse_plan.assessment.plan.mirror_namespace }}"
+    wait_name: "{{ fb_context.snapshot_name }}"
+    wait_state: Completed
+- name: Require an explicit archive recovery point
+  ansible.builtin.assert:
+    that:
+      - readiness.resources[0].status.appArchivePath | default('') | length > 0
+      - readiness.resources[0].status.appArchivePath.startswith(reverse_plan.assessment.dr_application_name ~ '_' ~ reverse_plan.assessment.dr_application_uid ~ '/')
+- name: Read selected source PVC incarnations after shutdown
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: PersistentVolumeClaim
+    namespace: "{{ item.0.destination_namespace }}"
+    name: "{{ item.1.pvc }}"
+  loop: "{{ reverse_plan.assessment.plan.selected_vms | subelements('disks') }}"
+  register: fb_final_pvcs
+- name: Require exact final snapshot disk membership
+  ansible.builtin.assert:
+    that:
+      - fb_final_pvcs.results | map(attribute='resources') | map('length') | unique | list == [1]
+      - readiness.resources[0].status.pvcs | default([]) | unique | sort == fb_final_pvcs.results | map(attribute='resources') | flatten | map(attribute='metadata.uid') | unique | sort
+      - readiness.resources[0].status.volumeSnapshots | default([]) | length == readiness.resources[0].status.pvcs | length
+    fail_msg: Final ShutdownSnapshot did not capture exactly the enrolled source disks. DC promotion is blocked.
+- name: Verify selected DR VMs cannot run
+  ansible.builtin.include_tasks: fb_stopped_vm.yml
+  loop: "{{ reverse_plan.assessment.plan.selected_vms }}"
+  loop_control:
+    loop_var: fb_member
+- name: Read journal for final snapshot checkpoint
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ConfigMap
+    namespace: "{{ reverse_plan.assessment.plan.mirror_namespace }}"
+    name: "{{ fb_context.record_name }}"
+  register: fb_checkpoint_journal
+- name: Persist exact completed snapshot identity
+  kubernetes.core.k8s_json_patch:
+    api_version: v1
+    kind: ConfigMap
+    namespace: "{{ reverse_plan.assessment.plan.mirror_namespace }}"
+    name: "{{ fb_context.record_name }}"
+    patch:
+      - {op: test, path: /metadata/uid, value: "{{ fb_checkpoint_journal.resources[0].metadata.uid }}"}
+      - {op: test, path: /metadata/resourceVersion, value: "{{ fb_checkpoint_journal.resources[0].metadata.resourceVersion }}"}
+      - op: replace
+        path: /data/state.json
+        value: "{{ (fb_checkpoint_journal.resources[0].data['state.json'] | from_json) | combine({'phase': 'shutdown_completed', 'snapshot_uid': readiness.resources[0].metadata.uid, 'archive': readiness.resources[0].status.appArchivePath}) | to_json }}"
+  when: (fb_checkpoint_journal.resources[0].data['state.json'] | from_json).phase != 'complete'
+- name: Pass final point and current isolation evidence
+  register: fb_stage_artifact
+  ansible.builtin.set_stats:
+    per_host: false
+    aggregate: false
+    data:
+      fb_shutdown:
+        request_id: "{{ reverse_plan.request_id }}"
+        snapshot_uid: "{{ readiness.resources[0].metadata.uid }}"
+        archive: "{{ readiness.resources[0].status.appArchivePath }}"
+        promoted_snapshot: "{{ readiness.resources[0].status.appArchivePath.split('/') | last }}"
+        checked_at: "{{ now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') }}"

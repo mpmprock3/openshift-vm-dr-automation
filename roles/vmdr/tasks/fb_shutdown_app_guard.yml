@@ -1,0 +1,7 @@
+---
+- name: Refuse shutdown of a replaced application or changed scope
+  ansible.builtin.assert:
+    that:
+      - fb_shutdown_app.resources | length == 1
+      - fb_shutdown_app.resources[0].metadata.uid == reverse_plan.assessment.dr_application_uid
+      - fb_shutdown_app.resources[0].spec.resourceFilter == reverse_plan.source_filter

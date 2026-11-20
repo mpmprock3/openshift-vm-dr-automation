@@ -1,79 +1,85 @@
-# Data-preserving failback: preparation
+# Data-preserving failback through AAP
 
-Status: preparation, assessment, and reverse-replication automation implemented. Reverse replication has local simulated testing only; final cutover is not yet implemented. Do not use the original AMR's `Established` reset as a substitute for preserving writes made on DR.
+The **Fail Back to DC** workflow implements reverse replication, final DR shutdown, DC recovery from the selected shutdown snapshot, and restoration of DC-to-DR protection. All operational tasks use native Ansible modules; no customer Python script or `oc` shell wrapper is required.
 
-## Why preparation is necessary
+Status: implemented and locally tested with simulated Kubernetes/controller responses. It is not yet live-qualified against the customer's NetApp environment. A successful simulation does not establish production support, zero data loss, application consistency, IP preservation or a measured RPO/RTO. Validate the actual workload and supported infrastructure before production use.
 
-The observed promoted Application includes namespace `vmdr`, but its resource matchers still reference `my-vm`, the original PV, and an old launcher Pod. A Ready Application alone does not prove that a new snapshot selects the active DR disks correctly.
+## One-time AAP setup
 
-`prepare_dr_failback_source.yml` reads the enrolled recovery catalog and promoted AMR, checks the live DR VMs and PVCs, discovers their dependencies using native Kubernetes Ansible modules, and rebuilds the mutable Application resource filter. It checks the immutable namespace and cluster resource scopes, uses UID/resourceVersion checks for the patch, records the proposed filter in a review ConfigMap, then creates a retained online Snapshot and waits for Completed.
+1. Sync the VM-DR-Automation project to the current `main` revision.
+2. Create a **Job Template**:
 
-It does not stop VMs, delete the promoted AMR, reverse replication, or modify DC. The online snapshot is a preparation checkpoint, not the final shutdown recovery point. Application consistency and actual captured disk membership still require verification.
+   | Field | Value |
+   |---|---|
+   | Name | Configure Failback Workflow |
+   | Playbook | `configure_failback_workflow.yml` |
+   | Project / inventory | The working VM DR project and inventory |
+   | Execution environment | Same tested environment as the existing DR jobs |
+   | Credentials | **OpenShift DR** and **AAP Survey Updater** |
 
-## Run the preparation job in AAP
+   The AAP credential injects `AAP_SURVEY_HOST`, `AAP_SURVEY_TOKEN` and optionally `AAP_SURVEY_CA`. Setup reuses configuration and credential IDs from existing **Configure DC Protection**, **Establish DR Replication**, and **Refresh Failback Choices** templates. The token must be able to manage the templates/workflow.
 
-1. Sync the VMDR automation project to the repository revision containing this file.
-2. Create a **Job Template** named **Prepare DR Failback Source**. Use the project's existing inventory and tested execution environment, playbook `prepare_dr_failback_source.yml`, and the **OpenShift DR** credential. This is separate from Enable DR Protection and Fail Over to DR.
-3. Remove the previously suggested `recovery_target` and `failback_request_id` from the preparation template's Extra variables. Operators will select a group in a survey instead.
-4. Create **Refresh Failback Choices**, playbook `refresh_failback_choices.yml`, using the same project/inventory/execution environment, **OpenShift DR** credential, and the **AAP API credential used by Refresh Recovery Choices** (injecting AAP_SURVEY_HOST/TOKEN). Run it once. It installs/enables the preparation survey and disables concurrent preparation launches.
-5. Open a fresh **Prepare DR Failback Source** launch form. Select a group such as `demo-vm-plan (my-vm/centos-vm) | vmdr/demo-vm-plan-dc9cfe0e-mirror` and launch. No manually entered AMR name or request ID is required. The identifier at the end distinguishes otherwise identically named groups.
-6. Inspect the reported snapshot name and status and confirm its captured volumes correspond to the current DR PVC/PV. The unrelated `my-vm/test-vm` remains outside the enrolled group.
+3. For a software-emulated lab only, set `protect_allow_emulation: true` in the setup template's extra variables. The generated workflow receives this setting on creation. Hardware KVM remains the default. This does not enable emulation on a cluster. For an existing workflow, update that setting in the workflow's extra variables if required.
+4. Launch **Configure Failback Workflow**. It creates seven stage jobs, connects success-only edges, creates **Refresh Failback Groups**, and populates the **Fail Back to DC** survey. Setup itself does not launch recovery or stop VMs.
+5. Open **Fail Back to DC → Launch**, select the protected group, optionally provide an HTTP health URL for the recovered DC application, and launch. The workflow stops selected DR workloads as part of planned cutover. No manual AMR name or request ID is needed.
 
-The refresh reads managed recovery catalogs and currently Promoted relationships. It updates stored AAP survey choices; it is not an on-open live dropdown. Run it after failover or schedule it in AAP. The preparation job independently rechecks the catalog, AMR identity/state, and live workload membership, so a stale choice is not permission to act on a different relationship. An empty list installs a placeholder that cannot pass preparation target validation.
+Do not run this concurrently with the older reverse-replication workflow, protection enrollment, failover, or external storage recovery tools. If the earlier job is still polling, inspect its status and finish or stop that AAP run first; stopping an AAP job does not stop NetApp controllers.
 
-Preparation IDs are derived automatically from the AMR UID, promotion request annotation, and Promoted transition timestamp. Retries of the same promotion reuse the same baseline; another promotion gets another identity. Retrying does not capture later writes again: this is only the preparation baseline, never the final cutover snapshot. An optional explicit `failback_request_id` remains available for administrator-controlled fresh captures, not as a customer survey question.
+## What the workflow does
 
-Read-only follow-up commands (DR):
-
-```bash
-oc --context=DR get applications.protect.trident.netapp.io demo-vm-plan-dc9cfe0e -n vmdr -o yaml
-oc --context=DR get snapshots.protect.trident.netapp.io -n vmdr -o yaml
-oc --context=DR get volumesnapshots.snapshot.storage.k8s.io -n vmdr -o yaml
-oc --context=DR get pvc centos-vm -n vmdr -o yaml
-```
-
-Do not paste credentials or Secret objects. `Retain` is intentional; review retained artifacts before later cleanup.
-
-## Optional read-only two-cluster assessment
-
-Run `assess_failback_dr.yml` with the DR credential and the same `recovery_target`. Connect it on success to `assess_failback_dc.yml` with the PROD credential in a separate AAP workflow. The first job passes `failback_assessment` through `set_stats`; the second requires that artifact and checks the original enrolled DC VM is stopped. Do not launch the DC assessment standalone without that artifact.
-
-## Establish reverse replication (DR remains active)
-
-This is a separate workflow from both protection enrollment and failover. It removes the original promoted AMR on DR, removes only managed schedules referencing the enrolled application on DC (with dependent objects orphaned), and establishes a new DR-to-DC AMR on DC. The old stopped DC disk becomes the replication target: DR is authoritative. Do not start the old DC VM or run original DC-to-DR enrollment/reset jobs during this operation.
-
-One-time AAP setup:
-
-1. Sync the project to the latest `main` revision.
-2. Create a **Job Template** named **Configure Reverse Replication Workflow**, playbook `configure_reverse_workflow.yml`. Use the existing project, tested execution environment and inventory, and credentials **OpenShift DR** plus **AAP Survey Updater**. Leave extra variables empty.
-3. Launch that setup job. It creates the workflow **Establish Reverse Replication**, four stage templates, and **Refresh Reverse Choices**, and populates the workflow survey. It does not launch reverse replication.
-4. Launch **Establish Reverse Replication** and select the protected group. No AMR name or request ID needs typing.
-
-The workflow runs these stages on success only:
-
-| Stage | Cluster | Effect |
+| Stage | Cluster | Operation |
 |---|---|---|
-| Inspect Reverse Source | DR | Check live VMs, exact snapshot PVC membership and application identity; persist a reverse operation ConfigMap. |
-| Prepare Reverse Destination | DC | Confirm enrolled VMs are the original stopped instances, check vault/storage access, remove the enrolled application's managed schedules. |
-| Release Promoted Relationship | DR | Recheck the baseline and running VMs, delete the original promoted AMR with UID/resourceVersion preconditions, enable a DR snapshot schedule. |
-| Establish Reverse Mirror | DC | Recheck stopped DC VMs and absent schedules; create/verify the inverse AMR and wait for Established with successful transfer evidence. |
+| Begin Failback | DR | Resolve the selected catalog; create/reuse the scoped DR baseline and reverse-operation record; load any cutover checkpoint. |
+| Prepare Failback DC | DC | Confirm original selected DC VMs are stopped, validate vault/storage access, remove only managed schedules for the enrolled application. Skipped after shutdown has begun. |
+| Release Failback DR | DR | Delete the original promoted AMR and enable the reverse-source snapshot schedule. Skipped after shutdown has begun. |
+| Check Failback DC | DC | Establish or check reverse replication; validate DC compute and identify the exact reverse AMR. On retries, recognize the saved DC receipt. |
+| Shutdown Failback DR | DR | Disable DR application schedules, create/reuse a retained ShutdownSnapshot, wait for Completed, verify exact captured PVC UIDs, and require selected DR VMIs absent and VMs absent or Halted. |
+| Recover Failback DC | DC | Atomically set `promotedSnapshot` to the final archive basename and promote the reverse AMR. Wait for Promoted, verify disks and Running/Ready VMIs, optionally check HTTP 200, rebuild DC resource selection, save a receipt, release the promoted reverse AMR, then create the DC baseline and schedule. |
+| Reprotect Failback DR | DR | Recheck DR remains offline, remove managed DR schedules, recreate DC-to-DR replication using the current DC Application UID, wait for a successful transfer, update the recovery catalog, and mark the journal complete. |
 
-At success, DR remains active and DC remains the destination. Check the relationship name and last-transfer status in the final job output. No VM cutover or zero-data-loss claim is made by this workflow.
+Promotion explicitly requests the final ShutdownSnapshot archive rather than whichever scheduled replica happens to be newest. The controller performs transfer/restoration for that requested point; the job waits for promotion completion. It does not assume that an earlier `lastTransferredSnapshot` is the final recovery point.
 
-### Retry and scope limits
+A completed workflow reports DC VM readiness and an Established forward relationship with successful transfer evidence. The original recovery catalog is updated with current VM/Application/AMR UIDs so subsequent failover uses the recovered objects.
 
-The durable `reverse-<hash>` ConfigMap in the DR namespace stores the original mapping and identities. If a failure occurs after the original AMR is deleted, rerun the same reverse workflow/group; the inspection can resume from that record. **Refresh Reverse Choices** also includes saved operations, so deletion does not remove the retry choice. Do not delete that record, reset the old AMR, or rerun original protection enrollment as a retry strategy. API failures retain partial work for diagnosis.
+## Operator choices and retries
 
-This implementation requires an invertible namespace mapping, one original destination storage class per group, the original DC Application and stopped VM identities, and a completed preparation baseline whose volume snapshots still exist. It rejects unmanaged schedules. Arbitrary destination replacement, merged namespace mappings, repeated failback cycles after later promotions, and concurrent externally initiated recovery operations are not implemented. A changed original identity stops the workflow for review. Serial execution is enforced within the generated workflow; it is not a distributed lock against other workflows, GitOps, administrators or external tools.
+The group dropdown is refreshed from promoted relationships and saved reverse records. **Refresh Failback Groups** updates the stored survey; it can be scheduled in AAP. It is not an on-open live query. Every execution revalidates the selected operation and cluster identities.
 
-A DR-to-DC transfer can overwrite the stale DC disk. Keep enrolled DC VMs stopped and prevent external automation from restarting them. Unrelated VMs such as `my-vm/test-vm` are not selected or modified. The workflow does not remove namespaces, PVCs or PVs itself. NetApp controllers perform the reverse-resync storage operations. Initial reverse transfer may need a full copy if there is no usable common snapshot; runtime is not guaranteed.
+Tracking IDs derive from the promotion; operators do not invent them. A DR ConfigMap named `cutover-<hash>` records shutdown intent and the completed final snapshot UID. A DC ConfigMap with the same name records the verified recovery point and recovered VM identities before the reverse AMR is deleted. Both are retained for diagnosis and retries.
 
-Local tests exercise native Ansible control flow against simulated Kubernetes responses, including a retry after AMR deletion and reuse of an Established reverse AMR. They do not validate NetApp backend behavior or constitute live/production qualification.
+After a transient failure, rerun the **whole Fail Back to DC workflow** with the same group. It reloads state and rechecks DR isolation instead of trusting old workflow artifacts. Promotion evidence older than 15 minutes is rejected; rerunning the whole workflow refreshes it. Do not launch internal stages independently or enter artifact variables manually.
 
-## Remaining implementation and verification
+If ShutdownSnapshot reports Failed, or a captured disk/UID differs, the workflow stops. Correct the underlying failure with the storage/application administrator; automatic deletion of failed snapshots or rollback is deliberately absent. A missing previously completed final snapshot is not recreated against a now-inactive source. Keep the DR and DC ownership state clear during diagnosis.
 
-After verifying reverse replication in the live POC, the next implementation stage is final planned cutover. At cutover it must stop writes on DR, complete a ShutdownSnapshot, select and confirm that exact recovery point for promotion on DC, verify restored disks and guest data, then re-protect DC toward DR. Retry state must distinguish completed transitions from pending ones. A failed final sync must never start DC.
+A later failover with a new forward-AMR UID can begin a new cycle only after the previous journal is complete. The prior reverse record is archived, then a new baseline and operation record are created. A different promotion while the previous cycle is incomplete is rejected. Retained history and snapshots require an operator-defined retention policy.
 
-The installed 26.02 API exposes `ShutdownSnapshot.spec.applicationRef` and `appVaultRef`. This verifies API presence, not successful reverse replication. Backend permissions, reverse relationship behavior with existing DC PVCs, snapshot membership, and final cutover remain to be tested.
+## Scope and prerequisites
 
-See [NetApp's replication and reverse operations documentation](https://docs.netapp.com/us-en/trident-2602/trident-protect/trident-protect-use-snapmirror-replication.html). Production acceptance requires an application-data test written on DR and verified on DC, measured recovery time and data loss, failure/retry tests, and a supported compute configuration. The current emulation-based POC does not establish those guarantees.
+- Trident Protect 26.02 APIs, AppVault connectivity on both clusters, and ONTAP/backend prerequisites for reverse replication must work. The last observed POC reverse relationship was still establishing; the full workflow will wait for or fail that prerequisite before stopping DR.
+- Namespace mapping must be invertible. Multiple source namespaces merged into one DR namespace require a separate design. One original DC destination storage class per group is supported.
+- Before first cutover, the enrolled DC Application and stopped VM identities must still exist. Recreated or manually modified original objects are rejected rather than adopted.
+- Only enrolled VM disk identities are selected. PVCs referenced by unenrolled VMs are rejected. Unrelated workloads such as `my-vm/test-vm` must remain untouched. The playbooks do not delete PVCs, PVs or namespaces; NetApp controllers perform storage operations and ShutdownSnapshot workload shutdown.
+- Restored Application filters are rebuilt from current resources because the observed POC retained old namespace/PV/pod references after failover. Immutable namespace/cluster-resource scope changes require review.
+- Prevent administrators, GitOps or other controllers from restarting inactive copies. AAP serialization applies to this workflow; it is not a distributed fence against external tools or another workflow.
+- Compute checks do not prove sufficient capacity, toleration compatibility, network reachability or matching guest IPs. NetApp reverse operations can remove execution hooks; configure and validate application-specific consistency requirements separately.
+- Do not use ordinary resync (`Promoted` to `Established` on the old AMR) as failback: it discards DR-side changes. Use the documented reverse sequence.
+
+## Live acceptance test
+
+1. While DR is active, write a uniquely identifiable test record/file inside the VM and flush it. Record its contents or checksum. For databases, use an application-level committed transaction.
+2. Launch the complete workflow and inspect every stage's result. A failed reverse transfer must not lead to DR shutdown; a failed shutdown snapshot must not lead to DC promotion.
+3. On DC, verify the guest/application and the DR-written record. HTTP 200 and Running/Ready alone do not prove data correctness.
+4. Confirm the selected DR VM is inactive, the forward AMR is Established, and scheduled DC-to-DR transfers continue.
+5. Exercise transient API/transfer failures and retries in the POC before production. Measure downtime and recovery-point behavior with the real workload.
+
+See [NetApp's failback and reverse operations procedure](https://docs.netapp.com/us-en/trident-2602/trident-protect/trident-protect-use-snapmirror-replication.html#fail-back-applications-to-the-original-source-cluster).
+
+## Standalone diagnostic workflows retained
+
+The earlier `prepare_dr_failback_source.yml`, `assess_failback_dr.yml`, `assess_failback_dc.yml`, and **Establish Reverse Replication** remain useful for stepwise diagnosis. They do not themselves perform the complete cutover. The complete workflow can resume the reverse record they created, so already established reverse replication need not be reset.
+
+For standalone preparation, run **Refresh Failback Choices**, then **Prepare DR Failback Source**. It repairs DR selectors and captures an online baseline while DR remains active. That baseline is not the final shutdown snapshot.
+
+## Local automated verification
+
+See [simulation instructions](../tests/failback_simulation/README.md). Test doubles model API responses and selected controller transitions only; they are never used by production jobs. Tests cover native workflow control flow, exact-point promotion, failed shutdown rejection, recovery after the reverse AMR has been removed, completed-operation retry, and unchanged unrelated workload metadata. Additional assertion tests reject mismatched or stale promotion evidence.

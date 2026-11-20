@@ -1,0 +1,47 @@
+---
+- hosts: localhost
+  gather_facts: false
+  vars:
+    reverse_plan:
+      assessment: {dr_application_uid: expected-app}
+      source_filter: {resourceSelectionCriteria: Include, resourceMatchers: []}
+  tasks:
+    - ansible.builtin.set_fact:
+        good_app:
+          resources:
+            - metadata: {uid: expected-app}
+              spec:
+                resourceFilter: "{{ reverse_plan.source_filter }}"
+        rejected_replacement: false
+        rejected_scope: false
+    - ansible.builtin.include_role:
+        name: vmdr
+        tasks_from: fb_shutdown_app_guard
+      vars:
+        fb_shutdown_app: "{{ good_app }}"
+    - block:
+        - ansible.builtin.include_role:
+            name: vmdr
+            tasks_from: fb_shutdown_app_guard
+          vars:
+            fb_shutdown_app:
+              resources:
+                - metadata: {uid: replacement-app}
+                  spec:
+                    resourceFilter: "{{ reverse_plan.source_filter }}"
+      rescue:
+        - ansible.builtin.set_fact: {rejected_replacement: true}
+    - block:
+        - ansible.builtin.include_role:
+            name: vmdr
+            tasks_from: fb_shutdown_app_guard
+          vars:
+            fb_shutdown_app:
+              resources:
+                - metadata: {uid: expected-app}
+                  spec:
+                    resourceFilter: {resourceSelectionCriteria: Exclude, resourceMatchers: []}
+      rescue:
+        - ansible.builtin.set_fact: {rejected_scope: true}
+    - ansible.builtin.assert:
+        that: [rejected_replacement, rejected_scope]

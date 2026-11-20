@@ -53,8 +53,8 @@
       name: Failback preparation
       description: Select the protected group currently active on DR. Tracking IDs are automatic.
       spec:
-        - question_name: Which protected VM group should be prepared for return to DC?
-          question_description: "{{ 'Establish DR-to-DC replication, removing the old promoted AMR and enrolled DC schedules. DR remains active; no final cutover.' if failback_survey_template_type | default('job_templates') == 'workflow_job_templates' else 'Prepare a DR baseline snapshot. This does not perform cutover.' }}"
+        - question_name: "{{ 'Which protected VM group should return to DC?' if failback_survey_template_name | default('') == 'Fail Back to DC' else 'Which protected VM group should be prepared for return to DC?' }}"
+          question_description: "{{ 'Planned failback stops the selected DR VMs, recovers DC from the final shutdown snapshot, and restores DC-to-DR replication.' if failback_survey_template_name | default('') == 'Fail Back to DC' else 'Establish DR-to-DC replication, removing the old promoted AMR and enrolled DC schedules. DR remains active; no final cutover.' if failback_survey_template_type | default('job_templates') == 'workflow_job_templates' else 'Prepare a DR baseline snapshot. This does not perform cutover.' }}"
           variable: failback_group
           type: multiplechoice
           required: true
@@ -62,13 +62,17 @@
           min: 0
           max: 1024
           choices: "{{ (failback_choices | unique | sort) if failback_choices | length > 0 else ['No eligible promoted groups — refresh after failover'] }}"
+- name: Add optional application verification for complete failback
+  ansible.builtin.set_fact:
+    failback_choice_survey: "{{ failback_choice_survey | combine({'spec': failback_choice_survey.spec + [{'question_name': 'Optional DC application health URL (HTTP 200 expected)', 'question_description': 'Use an endpoint that resolves to the recovered DC application. Leave empty to verify VM readiness only.', 'variable': 'failback_health_url', 'type': 'text', 'required': false, 'default': '', 'min': 0, 'max': 2048}]}) }}"
+  when: failback_survey_template_name | default('') == 'Fail Back to DC'
 - name: Read existing preparation survey
   ansible.builtin.include_tasks: survey_api.yml
   vars:
     survey_path: "{{ failback_job_path }}survey_spec/"
 - name: Refuse to replace unrelated survey questions
   ansible.builtin.assert:
-    that: survey_response.json.spec | default([]) | map(attribute='variable') | difference(['failback_group', 'recovery_target', 'failback_request_id']) | length == 0
+    that: survey_response.json.spec | default([]) | map(attribute='variable') | difference(['failback_group', 'recovery_target', 'failback_request_id', 'failback_health_url']) | length == 0
 - name: Save the customer selection survey
   ansible.builtin.include_tasks: survey_api.yml
   vars:

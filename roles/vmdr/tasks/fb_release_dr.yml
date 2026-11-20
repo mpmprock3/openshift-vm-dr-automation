@@ -1,0 +1,6 @@
+---
+- ansible.builtin.assert:
+    that: cluster_api == reverse_plan.source_api
+- name: Release original relationship only before shutdown begins
+  ansible.builtin.include_tasks: reverse_release.yml
+  when: not fb_context.resume | bool

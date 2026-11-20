@@ -1,0 +1,27 @@
+---
+- name: Build enrolled disk identities for this site
+  ansible.builtin.set_fact:
+    fb_disk_scope: []
+    fb_vm_scope: []
+- ansible.builtin.set_fact:
+    fb_vm_scope: "{{ fb_vm_scope + [(item.destination_namespace if fb_site == 'DR' else item.vm.split('/')[0]) ~ '/' ~ item.vm.split('/')[1]] }}"
+  loop: "{{ reverse_plan.assessment.plan.selected_vms }}"
+- ansible.builtin.set_fact:
+    fb_disk_scope: "{{ fb_disk_scope + [{'namespace': item.0.destination_namespace if fb_site == 'DR' else item.0.vm.split('/')[0], 'pvc': item.1.pvc}] }}"
+  loop: "{{ reverse_plan.assessment.plan.selected_vms | subelements('disks') }}"
+- name: Inspect VM disk references without exposing guest configuration
+  kubernetes.core.k8s_info:
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+  register: fb_site_vms
+  no_log: true
+- name: Reject protected disks also referenced by an unenrolled VM
+  ansible.builtin.assert:
+    that: other_claims | intersect(fb_disk_scope | selectattr('namespace', 'equalto', item.metadata.namespace) | map(attribute='pvc') | list) | length == 0
+    fail_msg: An unenrolled VM references a protected PVC; shared-disk recovery requires an explicit group design.
+  vars:
+    other_volumes: "{{ item.spec.template.spec.volumes | default([]) }}"
+    other_claims: "{{ (other_volumes | selectattr('persistentVolumeClaim', 'defined') | map(attribute='persistentVolumeClaim.claimName') | list) + (other_volumes | selectattr('dataVolume', 'defined') | map(attribute='dataVolume.name') | list) }}"
+  loop: "{{ fb_site_vms.resources }}"
+  when: item.metadata.namespace ~ '/' ~ item.metadata.name not in fb_vm_scope
+  no_log: true
