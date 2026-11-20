@@ -1,0 +1,9 @@
+---
+- name: Protect the recovered active site
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - ansible.builtin.include_role:
+        name: label_recovery
+        tasks_from: activate_protection

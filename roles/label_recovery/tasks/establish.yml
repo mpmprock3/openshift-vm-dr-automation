@@ -18,7 +18,9 @@
     that:
       - lr_namespace_check.resources[0].metadata.labels['app.kubernetes.io/managed-by'] | default('') == recovery_owner
       - lr_namespace_check.resources[0].metadata.labels[recovery_label_key] | default('') == label_recovery_plan.application
-  when: lr_namespace_check.resources | length > 0
+  when:
+    - lr_namespace_check.resources | length > 0
+    - not lr_resume_guard_passed | default(false)
 - name: Validate destination storage class
   kubernetes.core.k8s_info:
     api_version: storage.k8s.io/v1
@@ -64,7 +66,9 @@
   no_log: true
 - name: Require an empty destination for first establishment
   ansible.builtin.assert:
-    that: lr_destination_workloads.results | map(attribute='resources') | flatten | length == 0
+    that:
+      - lr_resume_guard_passed | default(false) or lr_destination_workloads.results | map(attribute='resources') | flatten | length == 0
+      - lr_destination_workloads.results | map(attribute='resources') | flatten | rejectattr('kind', 'equalto', 'PersistentVolumeClaim') | list | length == 0
     fail_msg: Recovery destination already contains workloads or disks. Nothing will be overwritten.
   when: lr_existing_mirror.resources | length == 0
 - name: Validate existing relationship identity and direction

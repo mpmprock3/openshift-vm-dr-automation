@@ -1,0 +1,75 @@
+---
+- ansible.builtin.set_fact:
+    label_recovery_plan: '{{ label_reprotection_plan }}'
+- ansible.builtin.assert:
+    that:
+      - label_recovery_plan.destination_api == lookup('env', 'K8S_AUTH_HOST') | regex_replace('/$', '')
+      - label_recovery_plan.retired_pvc_uids | length > 0
+- name: Verify retained destination Application
+  kubernetes.core.k8s_info:
+    api_version: '{{ recovery_api_version }}'
+    kind: Application
+    namespace: '{{ label_recovery_plan.destination_namespace }}'
+    name: '{{ label_recovery_plan.application }}'
+  register: lr_retired_app
+- ansible.builtin.assert:
+    that:
+      - lr_retired_app.resources | length == 1
+      - lr_retired_app.resources[0].metadata.uid == label_recovery_plan.retired_application_uid
+      - lr_retired_app.resources[0].spec.resourceFilter | default({}) == {}
+      - lr_retired_app.resources[0].spec.includedClusterScopedResources | default([]) == []
+      - "lr_retired_app.resources[0].spec.includedNamespaces == [{'namespace': label_recovery_plan.destination_namespace, 'labelSelector': {'matchLabels': {label_recovery_plan.label_key: label_recovery_plan.application}}}]"
+- name: Require that no destination VM or VMI can run
+  kubernetes.core.k8s_info:
+    api_version: kubevirt.io/v1
+    kind: '{{ item }}'
+    namespace: '{{ label_recovery_plan.destination_namespace }}'
+  loop: [VirtualMachine, VirtualMachineInstance]
+  register: lr_retired_vms
+  failed_when: lr_retired_vms.resources | length != 0
+  no_log: true
+- name: Verify retained disk identities
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: PersistentVolumeClaim
+    namespace: '{{ label_recovery_plan.destination_namespace }}'
+  register: lr_retired_pvcs
+- ansible.builtin.assert:
+    that:
+      - lr_retired_pvcs.resources | map(attribute='metadata.uid') | sort == label_recovery_plan.retired_pvc_uids | sort
+      - lr_retired_pvcs.resources | map(attribute='metadata.name') | sort == label_recovery_plan.pvcs | sort
+      - lr_retired_pvcs.resources | map(attribute='status.phase') | unique | list == ['Bound']
+- name: Read destination schedules
+  kubernetes.core.k8s_info:
+    api_version: '{{ recovery_api_version }}'
+    kind: Schedule
+    namespace: '{{ label_recovery_plan.destination_namespace }}'
+  register: lr_retired_schedules
+- name: Require managed disabled schedules before deleting them
+  ansible.builtin.assert:
+    that:
+      - item.metadata.labels['app.kubernetes.io/managed-by'] | default('') == recovery_owner
+      - not item.spec.enabled | default(true)
+  loop: "{{ lr_retired_schedules.resources | selectattr('spec.applicationRef', 'equalto', label_recovery_plan.application) | list }}"
+  loop_control:
+    label: '{{ item.metadata.name }}'
+- name: Remove disabled destination schedules as required for reverse replication
+  kubernetes.core.k8s:
+    state: absent
+    api_version: '{{ recovery_api_version }}'
+    kind: Schedule
+    name: '{{ item.metadata.name }}'
+    namespace: '{{ label_recovery_plan.destination_namespace }}'
+    delete_options:
+      preconditions:
+        uid: '{{ item.metadata.uid }}'
+  loop: "{{ lr_retired_schedules.resources | selectattr('spec.applicationRef', 'equalto', label_recovery_plan.application) | list }}"
+  loop_control:
+    label: '{{ item.metadata.name }}'
+- name: Authorize only the verified retained destination
+  ansible.builtin.set_fact:
+    lr_resume_guard_passed: true
+- name: Establish ongoing replication from the recovered active site
+  ansible.builtin.include_tasks: establish.yml
+- ansible.builtin.debug:
+    msg: 'Cutover and reprotection completed. Active VMs remain on the recovered site; the original source is now the replica.'
