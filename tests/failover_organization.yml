@@ -1,0 +1,33 @@
+---
+- hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - ansible.builtin.include_role:
+        name: vmdr
+        tasks_from: resolve_failover_organization
+      vars:
+        protection_workflow_organization: null
+        protection_project_organization: 7
+    - ansible.builtin.assert:
+        that: failover_organization | int == 7
+    - ansible.builtin.include_role:
+        name: vmdr
+        tasks_from: resolve_failover_organization
+      vars:
+        protection_workflow_organization: '12'
+        protection_project_organization: 7
+    - ansible.builtin.assert:
+        that: failover_organization | int == 12
+    - block:
+        - ansible.builtin.include_role:
+            name: vmdr
+            tasks_from: resolve_failover_organization
+          vars:
+            protection_workflow_organization: 0
+            protection_project_organization: null
+      rescue:
+        - ansible.builtin.set_fact:
+            invalid_organization_rejected: true
+    - ansible.builtin.assert:
+        that: invalid_organization_rejected | default(false)

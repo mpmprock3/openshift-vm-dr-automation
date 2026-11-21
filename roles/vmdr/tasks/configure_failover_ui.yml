@@ -22,9 +22,20 @@
 - name: Require the existing protection workflow
   ansible.builtin.assert:
     that: survey_response.json.count == 1
-- name: Record organization and desired job definitions
+- name: Record protection workflow organization
   ansible.builtin.set_fact:
-    failover_organization: "{{ survey_response.json.results[0].organization }}"
+    protection_workflow_organization: "{{ survey_response.json.results[0].organization | default('', true) }}"
+- name: Read the working protection project's organization when the workflow has none
+  ansible.builtin.include_tasks: survey_api.yml
+  vars:
+    survey_path: "/api/controller/v2/projects/{{ base_templates['Configure DC Protection'].project }}/"
+  when: not (protection_workflow_organization | string is match('^[1-9][0-9]*$'))
+- name: Resolve a valid organization before creating templates
+  ansible.builtin.include_tasks: resolve_failover_organization.yml
+  vars:
+    protection_project_organization: "{{ survey_response.json.organization | default('', true) }}"
+- name: Record desired job definitions
+  ansible.builtin.set_fact:
     failover_job_definitions:
       - {name: Prepare DR Failover, playbook: prepare_failover.yml, base: Establish DR Replication}
       - {name: Isolate Source VMs, playbook: isolate_source.yml, base: Configure DC Protection}

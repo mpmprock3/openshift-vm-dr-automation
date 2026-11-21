@@ -1,0 +1,13 @@
+---
+- name: Prefer the workflow organization and otherwise use the working project
+  ansible.builtin.set_fact:
+    failover_organization: >-
+      {{ protection_workflow_organization
+         if protection_workflow_organization | default('', true) | string is match('^[1-9][0-9]*$')
+         else protection_project_organization | default('', true) }}
+- name: Require an actual organization ID instead of coercing missing values to zero
+  ansible.builtin.assert:
+    that: failover_organization | string is match('^[1-9][0-9]*$')
+    fail_msg: >-
+      Neither Enable DR Protection nor its Configure DC Protection project has a valid organization ID.
+      Assign the appropriate organization in AAP and retry Configure Failover Workflow.
