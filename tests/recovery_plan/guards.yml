@@ -1,0 +1,31 @@
+---
+- hosts: localhost
+  gather_facts: false
+  connection: local
+  vars:
+    recovery_phases: [idle, checked, isolated, promoted, activated, healthy, protected]
+    recovery_target_site: dc
+    recovery_mode: planned
+    rp_config_hash: fixed
+  tasks:
+    - name: Reject a second direction while the first is incomplete
+      block:
+        - ansible.builtin.include_tasks: ../../roles/recovery_plan/tasks/validate_journal.yml
+          vars:
+            rp_journal: {phase: isolated, target: dr, mode: planned, config_hash: fixed}
+        - ansible.builtin.fail: {msg: SHOULD_HAVE_REJECTED}
+      rescue:
+        - ansible.builtin.assert:
+            that: ansible_failed_result.msg != 'SHOULD_HAVE_REJECTED'
+    - name: Reject changed policy during recovery
+      block:
+        - ansible.builtin.include_tasks: ../../roles/recovery_plan/tasks/validate_journal.yml
+          vars:
+            rp_journal: {phase: promoted, target: dc, mode: planned, config_hash: other}
+        - ansible.builtin.fail: {msg: SHOULD_HAVE_REJECTED}
+      rescue:
+        - ansible.builtin.assert:
+            that: ansible_failed_result.msg != 'SHOULD_HAVE_REJECTED'
+    - ansible.builtin.include_tasks: ../../roles/recovery_plan/tasks/validate_journal.yml
+      vars:
+        rp_journal: {phase: promoted, target: dc, mode: planned, config_hash: fixed}

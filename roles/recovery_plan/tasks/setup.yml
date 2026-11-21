@@ -1,0 +1,29 @@
+---
+- name: Require explicit AAP resource IDs and configured plans
+  ansible.builtin.assert:
+    that:
+      - recovery_aap_project_id | int > 0
+      - recovery_aap_inventory_id | int > 0
+      - recovery_aap_ee_id | int > 0
+      - recovery_aap_credential_id | int > 0
+      - recovery_plans | length > 0
+      - recovery_control_kubeconfig | length > 0
+- name: Initialize shared control records without changing existing journals
+  ansible.builtin.include_tasks: provision.yml
+  loop: '{{ recovery_plans | dict2items }}'
+  loop_control: {loop_var: rp_enrollment}
+- name: Create the independent planned recovery buttons
+  ansible.builtin.include_tasks: setup_button.yml
+  loop:
+    - {name: 'VMDR - Switch to DR', target: dr, mode: planned}
+    - {name: 'VMDR - Fail Back to DC', target: dc, mode: planned}
+  loop_control: {loop_var: rp_button}
+- name: Expose disaster recovery only for plans with a fencing integration
+  ansible.builtin.include_tasks: setup_button.yml
+  loop:
+    - {name: 'VMDR - Disaster Failover to DR', target: dr, mode: disaster}
+    - {name: 'VMDR - Disaster Failover to DC', target: dc, mode: disaster}
+  loop_control: {loop_var: rp_button}
+  when: recovery_plans | dict2items | selectattr('value.fence_tasks', 'defined') | list | length > 0
+- ansible.builtin.debug:
+    msg: Recovery job templates and journals configured. No VM or replication resources changed. Existing legacy templates were not modified.

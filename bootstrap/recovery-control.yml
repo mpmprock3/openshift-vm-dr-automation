@@ -1,0 +1,35 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: vmdr-control
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: recovery-runner
+  namespace: vmdr-control
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: recovery-journal
+  namespace: vmdr-control
+rules:
+  - apiGroups: ['']
+    resources: [configmaps]
+    verbs: [get, list, create, patch, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: recovery-journal
+  namespace: vmdr-control
+subjects:
+  - kind: ServiceAccount
+    name: recovery-runner
+    namespace: vmdr-control
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: recovery-journal

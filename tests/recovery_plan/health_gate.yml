@@ -1,0 +1,4 @@
+---
+- ansible.builtin.assert:
+    that: test_application_healthy | default(false) | bool
+    fail_msg: Simulated application transaction check failed.

@@ -4,7 +4,7 @@
 - name: Require the active source and recent target preflight
   ansible.builtin.assert:
     that:
-      - lr_plan.source_api == lookup('env', 'K8S_AUTH_HOST') | regex_replace('/$', '')
+      - lr_plan.source_api == (recovery_cluster_api | default(lookup('env', 'K8S_AUTH_HOST'))) | regex_replace('/$', '')
       - (now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') | to_datetime('%Y-%m-%dT%H:%M:%SZ') - lr_plan.checked_at | to_datetime('%Y-%m-%dT%H:%M:%SZ')).total_seconds() < 600
 - name: Read source selection
   kubernetes.core.k8s_info:
@@ -149,6 +149,7 @@
   failed_when: lr_definitions.resources | length > 0 and not (lr_definitions.resources[0].spec.runStrategy | default('') == 'Halted' or lr_definitions.resources[0].spec.running | default(true) == false)
   no_log: true
 - name: Pass exact recovery point to promotion stage
+  register: lr_stage_artifacts
   ansible.builtin.set_stats:
     per_host: false
     aggregate: false

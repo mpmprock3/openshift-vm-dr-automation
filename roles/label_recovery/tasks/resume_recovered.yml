@@ -54,6 +54,7 @@
       - lr_resume_disks.resources | map(attribute='metadata.uid') | sort == lr_plan.pvc_uids | sort
       - lr_resume_disks.resources | map(attribute='status.phase') | unique | list == ['Bound']
 - name: Resume only reprotection without shutting down or promoting again
+  register: lr_stage_artifacts
   ansible.builtin.set_stats:
     per_host: false
     aggregate: false

@@ -1,0 +1,60 @@
+---
+- name: Validate operator selection against administrator-owned plans
+  ansible.builtin.assert:
+    that:
+      - not ansible_check_mode
+      - recovery_plan_name is defined
+      - recovery_plan_name in recovery_plans
+      - recovery_plans | dict2items | map(attribute="value.application") | unique | length == recovery_plans | length
+      - recovery_target_site in ['dc', 'dr']
+      - recovery_mode in ['planned', 'disaster']
+      - recovery_control_kubeconfig | length > 0
+      - recovery_site_kubeconfigs[recovery_target_site] | length > 0
+- ansible.builtin.set_fact:
+    rp_config: '{{ recovery_plans[recovery_plan_name] }}'
+    rp_source_site: "{{ 'dc' if recovery_target_site == 'dr' else 'dr' }}"
+    rp_owner: "{{ lookup('password', '/dev/null', length=32, chars=['ascii_letters', 'digits']) }}"
+    rp_locked: false
+- name: Validate fixed plan configuration before taking a lock
+  ansible.builtin.assert:
+    that:
+      - rp_config.application is match('^[a-z][a-z0-9-]{0,61}[a-z0-9]$')
+      - rp_config.sites.dc.api != rp_config.sites.dr.api
+      - rp_config.sites.dc.api is match('^https://[^/]+$')
+      - rp_config.sites.dr.api is match('^https://[^/]+$')
+      - rp_config.health_url is match('^https://')
+      - rp_config.sites.dc.namespace not in ['default', 'kube-system', 'kube-public']
+      - rp_config.sites.dr.namespace not in ['default', 'kube-system', 'kube-public']
+      - recovery_mode != 'planned' or recovery_site_kubeconfigs[rp_source_site] | length > 0
+      - recovery_mode != 'disaster' or recovery_accept_data_loss | bool
+      - recovery_mode != 'disaster' or rp_config.fence_tasks is defined
+      - recovery_max_replica_age_minutes | int > 0
+- ansible.builtin.set_fact:
+    rp_lock_name: "recovery-{{ recovery_plan_name | hash('sha256') | truncate(24, true, '') }}"
+    rp_config_hash: '{{ rp_config | to_json(sort_keys=true) | hash("sha256") }}'
+    label_recovery_target: '{{ rp_config.sites[recovery_target_site].namespace }}/{{ rp_config.application }}'
+- name: Serialize the entire operation through the independent management cluster
+  block:
+    - ansible.builtin.include_tasks: lock.yml
+    - ansible.builtin.include_tasks: execute.yml
+  rescue:
+    - ansible.builtin.set_stats:
+        per_host: false
+        data:
+          recovery_result:
+            plan: '{{ recovery_plan_name }}'
+            target_site: '{{ recovery_target_site }}'
+            checkpoint: '{{ rp_journal.phase | default("not_started") }}'
+            protection_restored: false
+    - ansible.builtin.fail:
+        msg: 'Recovery stopped at {{ rp_journal.phase | default("lock acquisition") }}. The checkpoint is retained. Do not restart the old source. Resume the same plan and direction after correcting the reported failure; VM recovery does not imply restored protection.'
+  always:
+    - ansible.builtin.include_tasks: unlock.yml
+      when: rp_locked
+  module_defaults:
+    kubernetes.core.k8s_info:
+      kubeconfig: '{{ recovery_control_kubeconfig }}'
+      validate_certs: true
+    kubernetes.core.k8s_json_patch:
+      kubeconfig: '{{ recovery_control_kubeconfig }}'
+      validate_certs: true

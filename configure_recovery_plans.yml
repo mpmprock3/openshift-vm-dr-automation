@@ -1,0 +1,9 @@
+---
+- name: Configure opt-in recovery buttons without modifying existing workflows
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - ansible.builtin.include_role:
+        name: recovery_plan
+        tasks_from: setup
