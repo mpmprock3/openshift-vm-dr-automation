@@ -30,7 +30,9 @@
           http_status: "{{ survey_response.status | default(-1) }}"
           detail: >-
             {{ (survey_response.json | default({}) | dict2items |
-                selectattr('key', 'in', ['detail', 'error', 'non_field_errors', 'id', 'unified_job_template']) |
+                selectattr('key', 'in', ['detail', 'error', 'non_field_errors', 'id', 'unified_job_template',
+                  'name', 'organization', 'inventory', 'project', 'execution_environment',
+                  'allow_simultaneous', 'survey_enabled']) |
                 items2dict | to_json) | replace(lookup('env', 'AAP_SURVEY_TOKEN'), '[REDACTED]') }}
       no_log: true
     - name: Report safe AAP API failure
