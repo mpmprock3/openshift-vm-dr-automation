@@ -1,5 +1,7 @@
 # Planned VM failback: DR to DC
 
+**For the configured `test-vm` lab, use the [exact AAP steps and live run record](TEST-VM-AAP-RUNBOOK.md).** DR → DC job 35 succeeded on 21 November 2026, including reverse replication. That guide records the existing setup so you do not repeat migration/enrollment, and distinguishes verified VM recovery from pending guest-data and forward-cycle tests.
+
 This is the normal operation when the VM is running on DR and both OpenShift
 clusters are reachable. The customer handles external networking and application
 validation. **No external fencing provider, HTTP endpoint or third cluster is
