@@ -22,7 +22,7 @@
       - rp_config.sites.dc.api != rp_config.sites.dr.api
       - rp_config.sites.dc.api is match('^https://[^/]+$')
       - rp_config.sites.dr.api is match('^https://[^/]+$')
-      - rp_config.health_url is match('^https://')
+      - rp_config.health_url is not defined or rp_config.health_url is match('^https://')
       - rp_config.sites.dc.namespace not in ['default', 'kube-system', 'kube-public']
       - rp_config.sites.dr.namespace not in ['default', 'kube-system', 'kube-public']
       - recovery_mode != 'planned' or recovery_site_kubeconfigs[rp_source_site] | length > 0

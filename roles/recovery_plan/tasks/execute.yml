@@ -74,7 +74,8 @@
       recovery_result:
         plan: '{{ recovery_plan_name }}'
         active_site: '{{ recovery_target_site }}'
-        application_healthy: true
+        vm_ready: true
+        application_health: "{{ 'passed' if (rp_config.health_url is defined or rp_config.network_health_tasks is defined) else 'not_configured' }}"
         protection_restored: true
 - ansible.builtin.debug:
-    msg: 'Application healthy on {{ recovery_target_site }}; replication back to {{ rp_source_site }} verified. Guest transaction acceptance remains an operator test.'
+    msg: 'VM ready on {{ recovery_target_site }}; replication back to {{ rp_source_site }} verified. Application checks: {{ "passed" if (rp_config.health_url is defined or rp_config.network_health_tasks is defined) else "not configured; validate inside the guest" }}.'

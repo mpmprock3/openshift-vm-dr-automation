@@ -1,4 +1,5 @@
 """Run native Ansible against disposable API doubles. No real cluster access."""
+import argparse
 import copy
 import datetime
 import hashlib
@@ -14,7 +15,11 @@ import threading
 import uuid
 
 ROOT = Path(__file__).resolve().parents[2]
-OUT = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else ROOT / 'work/recovery-tests'
+parser = argparse.ArgumentParser()
+parser.add_argument('output', nargs='?', default=str(ROOT / 'work/recovery-tests'))
+parser.add_argument('--vm-only', action='store_true', help='Test planned moves with DC-hosted coordination and no application/fencing adapters')
+args = parser.parse_args()
+OUT = Path(args.output).resolve()
 OUT.mkdir(parents=True, exist_ok=True)
 ANSIBLE = shutil.which('ansible-playbook')
 assert ANSIBLE, 'Install ansible-core and add its bin directory to PATH'
@@ -25,13 +30,15 @@ subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-da
 api_jobs = [{'id': 1, 'name': 'Fail Over to DR', 'description': 'legacy sentinel'}]
 api_credentials = {}
 api_surveys = {}
+health_requests = []
 
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *args): pass
     def do_GET(self):
         from urllib.parse import parse_qs, urlparse
         parsed = urlparse(self.path)
-        if parsed.path == '/health': body = {'healthy': True}
+        if parsed.path == '/health':
+            health_requests.append(self.path); body = {'healthy': True}
         elif parsed.path.endswith('/credentials/'):
             jid = int(parsed.path.split('/')[-3]); body = {'results': [{'id': c} for c in api_credentials.get(jid, [])], 'next': None}
         else:
@@ -70,6 +77,10 @@ variables = {
         'sites': {'dc': {'api': 'https://dc', 'namespace': 'dc-vms'},
                   'dr': {'api': 'https://dr', 'namespace': 'dr-vms'}}}}
 }
+if args.vm_only:
+    variables['recovery_control_kubeconfig'] = 'dc'
+    for field in ['health_url', 'health_ca', 'fence_tasks']:
+        variables['recovery_plans']['finance'].pop(field, None)
 vars_path.write_text(json.dumps(variables))
 env = dict(os.environ, VMDR_PLAN_TEST_STATE=str(state),
            ANSIBLE_ROLES_PATH=str(ROOT / 'roles'),
@@ -83,7 +94,7 @@ def obj(kind, name, ns=None, **fields):
 
 def write(db): state.write_text(json.dumps(db))
 def read(): return json.loads(state.read_text())
-def record(db): return next(x for x in db['control'] if x['kind'] == 'ConfigMap')
+def record(db): return next(x for x in db[variables['recovery_control_kubeconfig']] if x['kind'] == 'ConfigMap' and x['metadata']['name'].startswith('recovery-'))
 
 def run(label, playbook='run_recovery_plan.yml', extra=None, success=True):
     command = [ANSIBLE, '-i', 'localhost,', playbook, '-e', '@' + str(vars_path)]
@@ -111,13 +122,26 @@ for site in ['dc', 'dr']:
 write(seed)
 run('setup', 'configure_recovery_plans.yml')
 run('setup-retry', 'configure_recovery_plans.yml')
-assert len(api_jobs) == 5 and api_jobs[0] == {'id': 1, 'name': 'Fail Over to DR', 'description': 'legacy sentinel'}
-assert len(api_surveys) == 4
+assert len(api_jobs) == (3 if args.vm_only else 5) and api_jobs[0] == {'id': 1, 'name': 'Fail Over to DR', 'description': 'legacy sentinel'}
+assert len(api_surveys) == (2 if args.vm_only else 4)
 for survey in api_surveys.values():
     assert survey['spec'][0]['choices'] == 'finance'
     if len(survey['spec']) == 2: assert survey['spec'][1]['choices'] == 'false\ntrue'
 run('enroll', 'tests/recovery_plan/enroll.yml')
 base = read()
+if args.vm_only:
+    run('vm-only-switch')
+    assert record(read())['data']['phase'] == 'protected'
+    run('vm-only-failback', extra={'recovery_target_site': 'dc'})
+    assert record(read())['data']['phase'] == 'protected'
+    assert read()['promotions'] == 2 and read()['shutdowns'] == 2
+    assert not health_requests
+    assert 'not configured; validate inside the guest' in (OUT / 'vm-only-failback.log').read_text()
+    assert any(x['kind'] == 'VirtualMachine' and x['metadata'].get('namespace') == 'dc-vms' for x in read()['dc'])
+    assert not any(x['kind'] == 'VirtualMachine' and x['metadata'].get('namespace') == 'dr-vms' for x in read()['dr'])
+    print('VM-only planned recovery passed with DC-hosted coordination and no application/fencing adapters.')
+    server.shutdown()
+    raise SystemExit(0)
 run('journal-guards', 'tests/recovery_plan/guards.yml', extra={'recovery_target_site': 'dc'})
 # Atomic lock contention: no source/target writes are permitted.
 busy = copy.deepcopy(base); record(busy)['data']['owner'] = 'other'; write(busy)

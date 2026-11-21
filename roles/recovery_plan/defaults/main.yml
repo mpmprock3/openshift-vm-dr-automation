@@ -2,7 +2,7 @@
 recovery_mode: planned
 recovery_target_site: dr
 recovery_control_namespace: vmdr-control
-recovery_control_kubeconfig: "{{ lookup('env', 'VMDR_CONTROL_KUBECONFIG') }}"
+recovery_control_kubeconfig: "{{ lookup('env', 'VMDR_CONTROL_KUBECONFIG') | default(lookup('env', 'VMDR_DC_KUBECONFIG'), true) }}"
 recovery_site_kubeconfigs:
   dc: "{{ lookup('env', 'VMDR_DC_KUBECONFIG') }}"
   dr: "{{ lookup('env', 'VMDR_DR_KUBECONFIG') }}"

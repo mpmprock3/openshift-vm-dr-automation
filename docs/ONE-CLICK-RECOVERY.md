@@ -1,5 +1,7 @@
 # One-click NetApp/AAP recovery plans
 
+**For the requested DR → DC VM move, start with [the planned VM failback quick start](VM-FAILBACK-QUICKSTART.md).** It needs no external fencing adapter, application URL or third cluster. The additional disaster-recovery integration below is optional.
+
 This is an opt-in runner for **one VM per plan** using the stable label-based
 Application model. It adds shared locking, durable checkpoints, planned moves,
 source-independent disaster recovery, application health checks and reprotection.
@@ -40,9 +42,12 @@ with AAP RBAC and removal of legacy launch access for **migrated plans only**.
 
 * Two OpenShift Virtualization sites with working bidirectional ONTAP peering,
   Trident storage and Trident Protect APIs. Both require AppVault access.
-* A management Kubernetes cluster and AAP that survive either workload-site
-  outage. Both directions must use the **same management cluster, namespace and
-  plan key**. Loss of the management cluster blocks recovery safely.
+* A shared coordination namespace for the lock/journal. For planned moves, this
+  can live on DC because both sites must be reachable anyway; the credential
+  defaults to DC. Source-unavailable disaster recovery additionally requires AAP
+  and an independent coordination cluster that survive either site outage. Both
+  directions must use the **same coordination cluster, namespace and plan key**.
+  Loss of that cluster blocks recovery safely.
 * Fixed, dedicated workload namespaces on each site. Use stable
   `vmdr.aap/protection-group` labels. The Application name is the same on both sites.
 * One VM per plan, with all its persistent disks on the configured storage class.
@@ -51,8 +56,9 @@ with AAP RBAC and removal of legacy launch access for **migrated plans only**.
   by this runner; it rejects groups larger than one before source shutdown.
 * Target capacity, network attachments, Secrets and external dependencies must be
   provisioned and tested. Basic KVM/node checks are not a capacity reservation.
-* An application HTTPS endpoint returning 200, reachable from AAP. HTTP health is
-  necessary here, but guest transaction/data checks are still required.
+* Optionally, an application HTTPS endpoint returning 200, reachable from AAP.
+  Without it the runner verifies the VM/VMI and disks, reports application health
+  as `not_configured`, and leaves guest/application validation to the customer.
 * GitOps and other automation must honor inactive-site ownership. A Kubernetes
   API timeout is never fencing. Planned shutdown requires source access.
 * Use the repository's tested EE: ansible-core 2.19 and kubernetes.core 6.6.0,
@@ -60,7 +66,8 @@ with AAP RBAC and removal of legacy launch access for **migrated plans only**.
 
 ## 1. Prepare credentials and the management journal
 
-Apply `bootstrap/recovery-control.yml` to the independent management cluster.
+Apply `bootstrap/recovery-control.yml` to DC for planned failback, or to an
+independent coordination cluster if you will enable disaster recovery.
 Provide an authenticated, CA-valid kubeconfig for its `recovery-runner` service
 account. Use your normal service-account credential rotation mechanism; this
 manifest deliberately does not create a permanent token Secret.
@@ -70,7 +77,8 @@ Create an AAP custom credential type with:
 * Inputs: `aap/recovery-credential-inputs.yml`
 * Injectors: `aap/recovery-credential-injectors.yml`
 
-Create a credential containing DC, DR and management kubeconfigs. Each must have
+Create a credential containing DC and DR kubeconfigs. The optional coordination
+kubeconfig defaults to DC; supply a separate one for disaster recovery. Each must have
 one intended current context and valid CA data; avoid exec-based authentication
 unless its executable is explicitly packaged and supported in the EE. Workload
 cluster permissions must cover the existing label recovery operations and read
@@ -147,7 +155,8 @@ recovery_plans:
       dr:
         api: https://api.dr.example.com:6443
         namespace: finance-dr
-    health_url: https://finance.example.com/health
+    # Optional; omit for a VM-only readiness check:
+    # health_url: https://finance.example.com/health
     # Optional path to a CA bundle packaged/mounted into the EE:
     # health_ca: /runner/config/customer-ca.pem
     # Optional reviewed, idempotent DNS/LB and application checks:
@@ -168,7 +177,11 @@ Snapshot completion age is an acceptance policy, not measured application RPO.
 
 ## 4. Install the buttons without changing working failover
 
-Create an AAP setup Job Template using `configure_recovery_plans.yml`, your project,
+For pre-merge qualification, use a separate AAP Project pinned to the reviewed
+recovery branch/commit; keep the existing legacy project on its working revision.
+Do not sync code during an in-progress recovery.
+
+Create an AAP setup Job Template using `configure_recovery_plans.yml`, that project,
 localhost inventory and tested EE. Attach the new multi-cluster credential plus
 **AAP Survey Updater** (which must have template-management permissions).
 
@@ -216,12 +229,12 @@ suitable for deployment. Restrict project write access because adapters are code
 `network_health_tasks`, when configured, runs after destination protection is
 activated and before declaring application health. It should idempotently update
 DNS/LB/routing for `recovery_target_site`, wait for convergence and execute
-application-specific checks. It reruns on retries. No adapter means infrastructure
-must already route the configured HTTPS health endpoint to the recovered VM.
+application-specific checks. It reruns on retries. If an HTTPS health endpoint is configured without a routing adapter, infrastructure
+must already route it to the recovered VM. Both are optional for VM-only recovery.
 
 ## Failure, restart and reprotection
 
-The independent control ConfigMap is named `recovery-<first 24 SHA256 hex chars of
+The shared coordination ConfigMap is named `recovery-<first 24 SHA256 hex chars of
 plan key>`. Its phases are:
 
 `idle → checked → isolated → promoted → activated → healthy → protected`
@@ -239,7 +252,8 @@ operation can move in the opposite direction using the new catalog/identities.
   after mirror deletion but before new enrollment is covered by the durable
   `promoted` checkpoint and receipt.
 * Completed retries recheck VM/PVC identities, application health and replication;
-  they do not perform a second cutover.
+  they do not perform a second cutover. With no application check configured, the
+  `healthy` checkpoint denotes verified VM/VMI and disk readiness only.
 * If AAP is killed before `always` can unlock, the lock remains held. First prove
   the owning execution is terminated, inspect Trident reconciliation and the
   journal/receipts, then have an administrator clear **only `data.owner`** with a
@@ -252,7 +266,7 @@ operation can move in the opposite direction using the new catalog/identities.
   restart it. The runner refuses automatic destructive cleanup. Resume to finish
   reverse replication after this prerequisite and source access are restored.
 * No automatic rollback starts an old copy after a failure. A successful AAP job
-  requires both application health and restored protection.
+  requires VM readiness, any configured application checks, and restored protection.
 
 ## Local verification
 
@@ -270,6 +284,7 @@ export ANSIBLE_COLLECTIONS_PATH="$PWD/work/collections"
 ansible-playbook -i localhost, run_recovery_plan.yml --syntax-check
 ansible-playbook -i localhost, configure_recovery_plans.yml --syntax-check
 python tests/recovery_plan/run.py
+python tests/recovery_plan/run.py work/vm-only-tests --vm-only
 ```
 
 The new harness uses disposable Kubernetes doubles and a local TLS AAP/health

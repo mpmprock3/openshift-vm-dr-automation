@@ -13,6 +13,7 @@
     use_netrc: false
     return_content: false
     timeout: 30
+  when: rp_config.health_url is defined
   register: rp_health
   until: rp_health.status | default(0) == 200
   retries: 12
