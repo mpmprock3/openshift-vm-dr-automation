@@ -1,0 +1,9 @@
+---
+# TEST ONLY: production adapters must call and verify a real fencing provider.
+- ansible.builtin.set_fact:
+    recovery_fence_result:
+      verified: true
+      plan: '{{ recovery_plan_name }}'
+      source_api: '{{ rp_config.sites[rp_source_site].api }}'
+      reference: fixture-fence-001
+      checked_at: "{{ now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') }}"

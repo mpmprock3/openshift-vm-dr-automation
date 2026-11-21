@@ -6,7 +6,7 @@
   ansible.builtin.assert:
     that:
       - lr_establish_plan.schema_version == 2
-      - lr_establish_plan.destination_api == lookup('env', 'K8S_AUTH_HOST') | regex_replace('/$', '')
+      - lr_establish_plan.destination_api == (recovery_cluster_api | default(lookup('env', 'K8S_AUTH_HOST'))) | regex_replace('/$', '')
       - lr_establish_plan.source_api != lr_establish_plan.destination_api
       - lr_establish_plan.destination_namespace not in ['default', 'kube-system', 'kube-public']
       - not lr_establish_plan.destination_namespace.startswith('openshift')
@@ -152,6 +152,7 @@
   register: lr_destination_pvcs
   failed_when: lr_destination_pvcs.resources | length != 1 or lr_destination_pvcs.resources[0].status.phase != 'Bound'
 - name: Pass replica identity for a separate cutover job
+  register: lr_stage_artifacts
   ansible.builtin.set_stats:
     per_host: false
     aggregate: false

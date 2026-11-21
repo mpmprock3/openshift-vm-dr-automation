@@ -1,0 +1,35 @@
+---
+- name: Read the control record for {{ rp_enrollment.key }}
+  kubernetes.core.k8s_info:
+    kubeconfig: '{{ recovery_control_kubeconfig }}'
+    validate_certs: true
+    api_version: v1
+    kind: ConfigMap
+    namespace: '{{ recovery_control_namespace }}'
+    name: "recovery-{{ rp_enrollment.key | hash('sha256') | truncate(24, true, '') }}"
+  register: rp_existing_control
+- name: Reject a foreign control record
+  ansible.builtin.assert:
+    that:
+      - rp_existing_control.resources[0].metadata.labels['app.kubernetes.io/managed-by'] | default('') == 'vmdr-recovery-plan'
+  when: rp_existing_control.resources | length > 0
+- name: Initialize an absent record during exclusive one-time setup
+  kubernetes.core.k8s:
+    kubeconfig: '{{ recovery_control_kubeconfig }}'
+    validate_certs: true
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "recovery-{{ rp_enrollment.key | hash('sha256') | truncate(24, true, '') }}"
+        namespace: '{{ recovery_control_namespace }}'
+        labels: {app.kubernetes.io/managed-by: vmdr-recovery-plan}
+      data:
+        owner: ''
+        phase: idle
+        target: ''
+        mode: ''
+        config_hash: ''
+        artifacts: '{}'
+  when: rp_existing_control.resources | length == 0

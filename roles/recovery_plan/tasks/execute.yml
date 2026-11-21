@@ -1,0 +1,81 @@
+---
+- ansible.builtin.set_fact:
+    rp_need_cutover: "{{ rp_journal.phase in ['idle', 'checked', 'isolated'] }}"
+- name: Revalidate target before any source shutdown or promotion
+  when: rp_need_cutover
+  block:
+    - ansible.builtin.set_fact:
+        rp_previous_mirror: '{{ label_cutover_plan.mirror_uid | default("") }}'
+    - ansible.builtin.include_tasks: stage.yml
+      vars:
+        rp_task: check_cutover
+        rp_site: '{{ recovery_target_site }}'
+    - ansible.builtin.assert:
+        that:
+          - not (rp_artifacts.label_cutover_recovered | default(false))
+          - label_cutover_plan.vms | length == 1
+          - label_cutover_plan.application == rp_config.application
+          - label_cutover_plan.destination_namespace == rp_config.sites[recovery_target_site].namespace
+          - rp_previous_mirror == '' or rp_previous_mirror == label_cutover_plan.mirror_uid
+          - label_cutover_plan.source_api == rp_config.sites[rp_source_site].api
+          - label_cutover_plan.source_namespace == rp_config.sites[rp_source_site].namespace
+        fail_msg: Catalog direction or mirror identity changed; do not take over an unrelated operation.
+    - ansible.builtin.include_tasks: target_guard.yml
+    - ansible.builtin.include_tasks: checkpoint.yml
+      vars: {rp_phase: checked}
+    - name: Capture or recheck the final shutdown snapshot
+      ansible.builtin.include_tasks: stage.yml
+      vars:
+        rp_task: shutdown
+        rp_site: '{{ rp_source_site }}'
+      when: recovery_mode == 'planned'
+    - name: Verify external fencing without connecting to the failed source
+      ansible.builtin.include_tasks: fence.yml
+      when: recovery_mode == 'disaster'
+    - ansible.builtin.include_tasks: checkpoint.yml
+      vars: {rp_phase: isolated}
+    - ansible.builtin.include_tasks: stage.yml
+      vars:
+        rp_task: "{{ 'promote' if recovery_mode == 'planned' else 'disaster_promote' }}"
+        rp_site: '{{ recovery_target_site }}'
+    - ansible.builtin.include_tasks: checkpoint.yml
+      vars: {rp_phase: promoted}
+- ansible.builtin.set_fact:
+    rp_need_activation: "{{ rp_journal.phase == 'promoted' }}"
+- name: Resume protection even if interrupted after releasing the promoted mirror
+  when: rp_need_activation
+  block:
+    - ansible.builtin.include_tasks: stage.yml
+      vars:
+        rp_task: activate_protection
+        rp_site: '{{ recovery_target_site }}'
+    - ansible.builtin.include_tasks: checkpoint.yml
+      vars: {rp_phase: activated}
+- name: Revalidate recovered VM and disk identities before reporting health
+  ansible.builtin.include_tasks: stage.yml
+  vars:
+    rp_task: check_cutover
+    rp_site: '{{ recovery_target_site }}'
+- name: Recheck application health on every retry including completed jobs
+  ansible.builtin.include_tasks: health.yml
+- ansible.builtin.include_tasks: checkpoint.yml
+  vars: {rp_phase: healthy}
+  when: rp_journal.phase == 'activated'
+- name: Verify or restore replication toward the inactive site
+  ansible.builtin.include_tasks: stage.yml
+  vars:
+    rp_task: reprotect
+    rp_site: '{{ rp_source_site }}'
+- ansible.builtin.include_tasks: checkpoint.yml
+  vars: {rp_phase: protected}
+- ansible.builtin.set_stats:
+    per_host: false
+    data:
+      recovery_result:
+        plan: '{{ recovery_plan_name }}'
+        active_site: '{{ recovery_target_site }}'
+        vm_ready: true
+        application_health: "{{ 'passed' if (rp_config.health_url is defined or rp_config.network_health_tasks is defined) else 'not_configured' }}"
+        protection_restored: true
+- ansible.builtin.debug:
+    msg: 'VM ready on {{ recovery_target_site }}; replication back to {{ rp_source_site }} verified. Application checks: {{ "passed" if (rp_config.health_url is defined or rp_config.network_health_tasks is defined) else "not configured; validate inside the guest" }}.'

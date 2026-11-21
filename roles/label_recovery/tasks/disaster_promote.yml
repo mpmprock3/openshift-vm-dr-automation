@@ -1,0 +1,87 @@
+---
+- ansible.builtin.set_fact:
+    lr_plan: '{{ label_cutover_plan }}'
+- name: Read target replica without accessing the failed source
+  kubernetes.core.k8s_info:
+    api_version: '{{ recovery_api_version }}'
+    kind: AppMirrorRelationship
+    namespace: '{{ lr_plan.destination_namespace }}'
+    name: '{{ lr_plan.application }}-mirror'
+  register: lr_disaster_mirror
+- name: Verify identity, fencing and ownership immediately before promotion
+  ansible.builtin.assert:
+    that:
+      - recovery_mode == 'disaster'
+      - recovery_accept_data_loss | bool
+      - rp_artifacts.fencing.verified | bool
+      - rp_artifacts.fencing.source_api == lr_plan.source_api
+      - rp_artifacts.fencing.plan == recovery_plan_name
+      - (now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') | to_datetime('%Y-%m-%dT%H:%M:%SZ') - rp_artifacts.fencing.checked_at | to_datetime('%Y-%m-%dT%H:%M:%SZ')).total_seconds() < 120
+      - lr_disaster_mirror.resources | length == 1
+      - lr_disaster_mirror.resources[0].metadata.uid == lr_plan.mirror_uid
+      - lr_disaster_mirror.resources[0].spec.sourceApplicationUID == lr_plan.application_uid
+      - lr_disaster_mirror.resources[0].spec.promotedSnapshot | default('') == ''
+      - lr_disaster_mirror.resources[0].spec.desiredState in ['Established', 'Promoted']
+      - lr_disaster_mirror.resources[0].spec.desiredState != 'Promoted' or (lr_disaster_mirror.resources[0].metadata.annotations | default({})).get('vmdr.aap/recovery-plan', '') == recovery_plan_name
+- ansible.builtin.set_fact:
+    lr_replica_age: "{{ (now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') | to_datetime('%Y-%m-%dT%H:%M:%SZ') - lr_disaster_mirror.resources[0].status.lastTransferredSnapshot.completionTimestamp | regex_replace('\\.[0-9]+Z$', 'Z') | to_datetime('%Y-%m-%dT%H:%M:%SZ')).total_seconds() }}"
+- name: Enforce accepted replica completion age on first promotion
+  ansible.builtin.assert:
+    that:
+      - lr_replica_age | float >= 0
+      - lr_replica_age | float <= recovery_max_replica_age_minutes | int * 60
+  when: lr_disaster_mirror.resources[0].spec.desiredState == 'Established'
+- kubernetes.core.k8s_json_patch:
+    api_version: '{{ recovery_api_version }}'
+    kind: AppMirrorRelationship
+    namespace: '{{ lr_plan.destination_namespace }}'
+    name: '{{ lr_plan.application }}-mirror'
+    patch:
+      - {op: test, path: /metadata/uid, value: '{{ lr_plan.mirror_uid }}'}
+      - {op: test, path: /metadata/resourceVersion, value: '{{ lr_disaster_mirror.resources[0].metadata.resourceVersion }}'}
+      - {op: test, path: /spec/desiredState, value: Established}
+      - op: add
+        path: /metadata/annotations
+        value: "{{ lr_disaster_mirror.resources[0].metadata.annotations | default({}) | combine({'vmdr.aap/recovery-plan': recovery_plan_name}) }}"
+      - {op: replace, path: /spec/desiredState, value: Promoted}
+  when: lr_disaster_mirror.resources[0].spec.desiredState == 'Established'
+- ansible.builtin.include_tasks: wait.yml
+  vars:
+    lr_kind: AppMirrorRelationship
+    lr_name: '{{ lr_plan.application }}-mirror'
+    lr_namespace: '{{ lr_plan.destination_namespace }}'
+    lr_state: Promoted
+- ansible.builtin.assert:
+    that:
+      - lr_ready.resources[0].metadata.uid == lr_plan.mirror_uid
+      - lr_ready.resources[0].status.conditions | selectattr('type', 'equalto', 'Promoted') | selectattr('status', 'equalto', 'True') | list | length == 1
+- ansible.builtin.include_tasks: verify_vm.yml
+  loop: '{{ lr_plan.vms }}'
+  loop_control: {loop_var: lr_member}
+- ansible.builtin.set_fact:
+    label_final_snapshot:
+      mode: disaster
+      uid: '{{ lr_plan.mirror_uid }}'
+      observed_replica: '{{ lr_disaster_mirror.resources[0].status.lastTransferredSnapshot }}'
+      fencing: '{{ rp_artifacts.fencing }}'
+- name: Persist verified disaster recovery receipt
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: '{{ lr_plan.final_name }}-receipt'
+        namespace: '{{ lr_plan.destination_namespace }}'
+        labels:
+          app.kubernetes.io/managed-by: '{{ recovery_owner }}'
+          app.kubernetes.io/component: label-recovery-receipt
+      data:
+        plan.json: '{{ lr_plan | to_json }}'
+        snapshot.json: '{{ label_final_snapshot | to_json }}'
+- register: lr_stage_artifacts
+  ansible.builtin.set_stats:
+    per_host: false
+    aggregate: false
+    data:
+      label_final_snapshot: '{{ label_final_snapshot }}'

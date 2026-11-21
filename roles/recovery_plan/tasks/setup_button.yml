@@ -1,0 +1,80 @@
+---
+- ansible.builtin.set_fact:
+    desired_job_settings:
+      name: '{{ rp_button.name }}'
+      description: Managed by VMDR recovery-plan setup v1
+      job_type: run
+      inventory: '{{ recovery_aap_inventory_id | int }}'
+      project: '{{ recovery_aap_project_id | int }}'
+      execution_environment: '{{ recovery_aap_ee_id | int }}'
+      playbook: run_recovery_plan.yml
+      allow_simultaneous: false
+      timeout: 14400
+      survey_enabled: true
+      ask_variables_on_launch: false
+      extra_vars: "{{ {'recovery_target_site': rp_button.target, 'recovery_mode': rp_button.mode} | to_json }}"
+- ansible.builtin.include_role:
+    name: vmdr
+    tasks_from: survey_api
+  vars:
+    survey_path: "/api/controller/v2/job_templates/?{{ {'name': rp_button.name} | urlencode }}"
+- ansible.builtin.assert:
+    that: survey_response.json.count | int <= 1
+- name: Refuse to silently overwrite a different job configuration
+  ansible.builtin.assert:
+    that: survey_response.json.results[0][item.key] == item.value
+    fail_msg: 'Existing {{ rp_button.name }} differs at {{ item.key }}. Review the template before setup.'
+  loop: '{{ desired_job_settings | dict2items }}'
+  when: survey_response.json.count | int == 1
+- ansible.builtin.include_role:
+    name: vmdr
+    tasks_from: survey_api
+  vars:
+    survey_path: /api/controller/v2/job_templates/
+    survey_method: POST
+    survey_body: '{{ desired_job_settings }}'
+  when: survey_response.json.count | int == 0
+- ansible.builtin.set_fact:
+    rp_job_id: '{{ survey_response.json.id | default((survey_response.json.results | default([{}]) | first).id) }}'
+- ansible.builtin.include_role:
+    name: vmdr
+    tasks_from: survey_api
+  vars:
+    survey_path: '/api/controller/v2/job_templates/{{ rp_job_id }}/credentials/?page_size=200'
+- ansible.builtin.assert:
+    that:
+      - survey_response.json.next | default(none) == none
+      - survey_response.json.results | map(attribute='id') | difference([recovery_aap_credential_id | int]) | length == 0
+- ansible.builtin.include_role:
+    name: vmdr
+    tasks_from: survey_api
+  vars:
+    survey_path: '/api/controller/v2/job_templates/{{ rp_job_id }}/credentials/'
+    survey_method: POST
+    survey_body: "{{ {'id': recovery_aap_credential_id | int} }}"
+  when: survey_response.json.results | length == 0
+- ansible.builtin.set_fact:
+    rp_choices: "{{ (recovery_plans | dict2items | selectattr('value.fence_tasks', 'defined') | map(attribute='key') | list) if rp_button.mode == 'disaster' else recovery_plans.keys() | list }}"
+- ansible.builtin.set_fact:
+    rp_survey:
+      name: Recovery plan
+      description: Select an administrator-enrolled plan. Infrastructure identifiers are discovered.
+      spec:
+        - question_name: Recovery plan
+          question_description: Select the entire protected application group.
+          variable: recovery_plan_name
+          type: multiplechoice
+          required: true
+          default: ''
+          choices: '{{ rp_choices | sort | join("\n") }}'
+- name: Require deliberate acceptance of asynchronous disaster data loss
+  ansible.builtin.set_fact:
+    rp_survey: "{{ rp_survey | combine({'spec': rp_survey.spec + [{'question_name': 'Accept recovery without final source sync', 'question_description': 'Source fencing must be verified by the configured provider. Replica age is bounded by policy.', 'variable': 'recovery_accept_data_loss', 'type': 'multiplechoice', 'required': true, 'default': 'false', 'choices': 'false\ntrue'}]}) }}"
+  when: rp_button.mode == 'disaster'
+- ansible.builtin.include_role:
+    name: vmdr
+    tasks_from: survey_api
+  vars:
+    survey_path: '/api/controller/v2/job_templates/{{ rp_job_id }}/survey_spec/'
+    survey_method: POST
+    survey_body: '{{ rp_survey }}'

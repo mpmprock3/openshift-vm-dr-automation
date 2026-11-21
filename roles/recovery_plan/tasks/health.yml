@@ -1,0 +1,20 @@
+---
+- name: Apply idempotent site routing and application validation when configured
+  ansible.builtin.include_tasks: '{{ rp_config.network_health_tasks }}'
+  when: rp_config.network_health_tasks is defined
+- name: Check the recovered application over TLS
+  ansible.builtin.uri:
+    url: '{{ rp_config.health_url }}'
+    method: GET
+    status_code: 200
+    validate_certs: true
+    ca_path: "{{ rp_config.health_ca | default(omit) }}"
+    follow_redirects: none
+    use_netrc: false
+    return_content: false
+    timeout: 30
+  when: rp_config.health_url is defined
+  register: rp_health
+  until: rp_health.status | default(0) == 200
+  retries: 12
+  delay: 10

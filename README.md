@@ -1,6 +1,10 @@
 # OpenShift VM disaster recovery automation
 
-**Current cleaned POC:** follow [the three-workflow operating guide](docs/CLEAN-POC.md). The legacy templates listed later in this README were removed from the current AAP instance; do not recreate them for this protection group.
+**Current test-vm lab (21 November 2026): [AAP operator runbook and successful failback record](docs/TEST-VM-AAP-RUNBOOK.md).** The VM is now active on DC in `vm-dc-recovered`, with replication to DR `vmdr`. Use **VMDR - Switch to DR** and **VMDR - Fail Back to DC**, selecting plan **test-vm**. The runbook records the exact setup, one-time legacy migration, successful job 35, repeatable launch steps and remaining guest-data/forward-cycle tests. Keep the retained old `my-vm/test-vm` stopped.
+
+**New opt-in one-click recovery plans:** start with [planned DR-to-DC VM failback](docs/VM-FAILBACK-QUICKSTART.md), or see [full setup and testing](docs/ONE-CLICK-RECOVERY.md). The new NetApp/AAP runner adds shared locking, durable resume, planned failback, verified-fencing disaster recovery and health checks for single-VM label-based plans. Existing legacy failover is unchanged; do not mix the two operating paths for the same VM. Live qualification is required.
+
+**Historical POC:** [the three-workflow operating guide](docs/CLEAN-POC.md) describes the 20 November environment, not the current `test-vm` operating path. The legacy sections below remain reference material for unmigrated plans; do not use them for the migrated `test-vm`.
 
 **Failback incident recovery:** use the [label-based recovery guide](docs/LABEL-RECOVERY.md) for the new dedicated-namespace path. The legacy failback workflow's site-specific PV/pod filters failed live Application reuse checks. Do not copy a DR filter onto a DC Application to bypass that check.
 

@@ -2,7 +2,7 @@
 - ansible.builtin.set_fact:
     lr_old_plan: '{{ label_cutover_plan }}'
 - ansible.builtin.assert:
-    that: lr_old_plan.destination_api == lookup('env', 'K8S_AUTH_HOST') | regex_replace('/$', '')
+    that: lr_old_plan.destination_api == (recovery_cluster_api | default(lookup('env', 'K8S_AUTH_HOST'))) | regex_replace('/$', '')
 - name: Require successful cutover receipt
   kubernetes.core.k8s_info:
     api_version: v1
@@ -27,7 +27,12 @@
     that:
       - lr_release.resources[0].metadata.uid == lr_old_plan.mirror_uid
       - lr_release.resources[0].status.state == 'Promoted'
-      - lr_release.resources[0].spec.promotedSnapshot == label_final_snapshot.archive.split('/')[-1]
+      - >-
+        (label_final_snapshot.mode | default('planned') == 'planned' and
+         lr_release.resources[0].spec.promotedSnapshot | default('') == label_final_snapshot.archive.split('/')[-1]) or
+        (label_final_snapshot.mode | default('planned') == 'disaster' and
+         lr_release.resources[0].spec.promotedSnapshot | default('') == '' and
+         (lr_release.resources[0].metadata.annotations | default({})).get('vmdr.aap/recovery-plan', '') == recovery_plan_name)
   when: lr_release.resources | length > 0
 - name: Read recovered Application
   kubernetes.core.k8s_info:
@@ -79,6 +84,7 @@
     recovery_interval_minutes: '{{ lr_old_plan.interval_minutes }}'
     recovery_baseline_seed: '{{ lr_old_plan.mirror_uid }}'
 - name: Pass exact stopped destination identities to reprotection
+  register: lr_stage_artifacts
   ansible.builtin.set_stats:
     per_host: false
     aggregate: false

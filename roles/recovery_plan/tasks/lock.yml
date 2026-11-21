@@ -1,0 +1,49 @@
+---
+- name: Read the preprovisioned shared lock and journal
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ConfigMap
+    namespace: '{{ recovery_control_namespace }}'
+    name: '{{ rp_lock_name }}'
+  register: rp_record
+- name: Require an idle lock owned by this recovery service
+  ansible.builtin.assert:
+    that:
+      - rp_record.resources | length == 1
+      - rp_record.resources[0].metadata.labels['app.kubernetes.io/managed-by'] | default('') == 'vmdr-recovery-plan'
+      - rp_record.resources[0].data.owner == ''
+      - rp_record.resources[0].data.phase in recovery_phases
+    fail_msg: Missing or busy recovery lock. Never steal a lock from a running job; see the interrupted-job procedure.
+- name: Claim lock using resourceVersion compare-and-swap
+  kubernetes.core.k8s_json_patch:
+    api_version: v1
+    kind: ConfigMap
+    namespace: '{{ recovery_control_namespace }}'
+    name: '{{ rp_lock_name }}'
+    patch:
+      - {op: test, path: /metadata/resourceVersion, value: '{{ rp_record.resources[0].metadata.resourceVersion }}'}
+      - {op: test, path: /data/owner, value: ''}
+      - {op: replace, path: /data/owner, value: '{{ rp_owner }}'}
+- ansible.builtin.set_fact:
+    rp_locked: true
+    rp_journal: '{{ rp_record.resources[0].data }}'
+- ansible.builtin.include_tasks: validate_journal.yml
+- name: Start a new direction only after the last operation was protected
+  ansible.builtin.set_fact:
+    rp_journal:
+      owner: '{{ rp_owner }}'
+      phase: idle
+      target: '{{ recovery_target_site }}'
+      mode: '{{ recovery_mode }}'
+      config_hash: '{{ rp_config_hash }}'
+      artifacts: '{}'
+  when: rp_journal.phase == 'idle' or (rp_journal.phase == 'protected' and rp_journal.target != recovery_target_site)
+- ansible.builtin.set_fact:
+    rp_artifacts: '{{ rp_journal.artifacts | from_json }}'
+- name: Load durable artifacts without accepting operator-supplied stage variables
+  ansible.builtin.set_fact:
+    label_cutover_plan: '{{ rp_artifacts.label_cutover_plan | default({}) }}'
+    label_final_snapshot: '{{ rp_artifacts.label_final_snapshot | default({}) }}'
+    label_reprotection_plan: '{{ rp_artifacts.label_reprotection_plan | default({}) }}'
+    label_cutover_recovered: false
+- ansible.builtin.include_tasks: journal.yml

@@ -1,0 +1,9 @@
+---
+- name: Refuse a conflicting operation or changed configuration during recovery
+  ansible.builtin.assert:
+    that:
+      - rp_journal.phase in recovery_phases
+      - rp_journal.phase in ['idle', 'protected'] or rp_journal.target == recovery_target_site
+      - rp_journal.phase in ['idle', 'protected'] or rp_journal.mode == recovery_mode
+      - rp_journal.phase == 'idle' or rp_journal.config_hash == rp_config_hash
+    fail_msg: Resume the saved operation with its original plan configuration before starting a different operation.

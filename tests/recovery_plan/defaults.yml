@@ -1,0 +1,12 @@
+---
+- name: Validate the planned recovery credential fallback
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - ansible.builtin.include_vars: ../../roles/recovery_plan/defaults/main.yml
+    - ansible.builtin.assert:
+        that:
+          - lookup('env', 'VMDR_CONTROL_KUBECONFIG') == ''
+          - recovery_control_kubeconfig == lookup('env', 'VMDR_DC_KUBECONFIG')
+          - recovery_mode == 'planned'

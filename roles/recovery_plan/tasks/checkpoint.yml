@@ -1,0 +1,4 @@
+---
+- ansible.builtin.set_fact:
+    rp_journal: "{{ rp_journal | combine({'phase': rp_phase}) }}"
+- ansible.builtin.include_tasks: journal.yml

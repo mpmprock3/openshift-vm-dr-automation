@@ -1,0 +1,30 @@
+---
+- name: Run {{ rp_task }} on {{ rp_site }} with explicitly bound credentials
+  block:
+    - ansible.builtin.set_fact:
+        lr_stage_artifacts: {}
+    - ansible.builtin.include_role:
+        name: label_recovery
+        tasks_from: '{{ rp_task }}'
+      vars:
+        recovery_cluster_api: '{{ rp_config.sites[rp_site].api }}'
+    - name: Import the same artifacts that separate AAP stage jobs export
+      ansible.builtin.set_fact:
+        rp_artifacts: '{{ rp_artifacts | combine(lr_stage_artifacts.ansible_stats.data | default({})) }}'
+    - ansible.builtin.set_fact:
+        label_cutover_plan: '{{ rp_artifacts.label_cutover_plan | default({}) }}'
+        label_final_snapshot: '{{ rp_artifacts.label_final_snapshot | default({}) }}'
+        label_reprotection_plan: '{{ rp_artifacts.label_reprotection_plan | default({}) }}'
+  module_defaults:
+    kubernetes.core.k8s_info:
+      kubeconfig: '{{ recovery_site_kubeconfigs[rp_site] }}'
+      host: '{{ rp_config.sites[rp_site].api }}'
+      validate_certs: true
+    kubernetes.core.k8s:
+      kubeconfig: '{{ recovery_site_kubeconfigs[rp_site] }}'
+      host: '{{ rp_config.sites[rp_site].api }}'
+      validate_certs: true
+    kubernetes.core.k8s_json_patch:
+      kubeconfig: '{{ recovery_site_kubeconfigs[rp_site] }}'
+      host: '{{ rp_config.sites[rp_site].api }}'
+      validate_certs: true

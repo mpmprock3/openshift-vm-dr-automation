@@ -1,4 +1,6 @@
-# Current POC: three workflows
+# Historical POC: three workflows (20 November 2026)
+
+**Superseded for the current `test-vm` lab.** Use [the 21 November AAP runbook](TEST-VM-AAP-RUNBOOK.md) and the two `VMDR -` buttons. The namespace names and numbered workflows below document an earlier environment; do not apply them to the migrated plan.
 
 The 2026-11-20 cleanup preserved the running PROD VM and both disks. Healthy protection was reapplied and validated, not destructively torn down. Obsolete AAP workflows/job templates and the disabled legacy DR schedule were removed. Historical Application/Snapshot records were retained to preserve recovery history. Cluster operators, AAP credentials and AppVaults remain installed.
 

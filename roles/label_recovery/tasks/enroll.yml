@@ -3,7 +3,7 @@
   ansible.builtin.assert:
     that:
       - not ansible_check_mode
-      - lookup('env', 'K8S_AUTH_HOST') is match('^https://[^/]+/?$')
+      - (recovery_cluster_api | default(lookup('env', 'K8S_AUTH_HOST'))) is match('^https://[^/]+/?$')
       - recovery_application_name is match('^[a-z][a-z0-9-]{0,61}[a-z0-9]$')
       - recovery_vms | length > 0
       - recovery_vms | unique | length == recovery_vms | length
@@ -205,7 +205,7 @@
       application_uid: '{{ lr_application_uid }}'
       source_namespace: '{{ recovery_source_namespace }}'
       destination_namespace: '{{ recovery_destination_namespace }}'
-      source_api: "{{ lookup('env', 'K8S_AUTH_HOST') | regex_replace('/$', '') }}"
+      source_api: "{{ (recovery_cluster_api | default(lookup('env', 'K8S_AUTH_HOST'))) | regex_replace('/$', '') }}"
       destination_api: '{{ recovery_destination_api }}'
       vault: '{{ recovery_vault }}'
       storage_class: '{{ recovery_storage_class }}'
@@ -229,6 +229,7 @@
       data:
         plan.json: '{{ label_recovery_plan | to_json }}'
 - name: Pass enrollment to destination job
+  register: lr_stage_artifacts
   ansible.builtin.set_stats:
     per_host: false
     aggregate: false
