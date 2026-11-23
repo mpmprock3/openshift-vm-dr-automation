@@ -1,5 +1,7 @@
 # OpenShift VM disaster recovery automation
 
+**Reset a completed failover test:** follow [the lab cleanup and restart guide](docs/LAB-CLEANUP.md). It records the cleanup reported successful on 23 November 2026, preserves AAP/storage infrastructure, and explains how to enroll a fresh VM for the next test.
+
 **New or recreated clusters? Follow the [one-pass rebuild runbook](docs/RUNBOOK.md)**: ordered steps, checkpoints, and the mistakes from the first lab, so you don't repeat the trial and error. The [detailed rebuild guide](docs/REBUILD.md) explains each stage in depth. It covers prerequisites, optional ACM, AAP installation, credentials, all initial templates and surveys, replication, failover, acceptance tests and troubleshooting. The [bootstrap manifests](bootstrap/) contain the non-secret starting resources.
 
 Ansible playbooks enroll selected OpenShift Virtualization VMs in NetApp Trident Protect replication. AAP supplies the survey answers and cluster credentials; Trident Protect performs snapshot and replication operations. The workflow uses Ansible roles and YAML/Jinja templates, with no custom Python scripts or filter plugins to maintain.

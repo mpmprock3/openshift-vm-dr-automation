@@ -445,6 +445,14 @@ For step-by-step failback diagnosis (baseline only, reverse replication only), s
 
 ---
 
+## Reset a completed test without rebuilding the clusters
+
+Use [LAB-CLEANUP.md](LAB-CLEANUP.md) to discard the old test VM and its dedicated
+workload namespaces on PROD and DR, retain AAP/Trident infrastructure, and create
+a new VM for another failover run. This is destructive lab cleanup, not failback.
+It includes the exact `my-vm/test-vm` example reported successfully cleaned on
+23 November 2026 and the ownership checks required before reusing the procedure.
+
 ## 16. Before the clusters expire
 
 - Save the Git commit, survey answers, job outputs and timings outside the clusters.
