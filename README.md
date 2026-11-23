@@ -1,5 +1,7 @@
 # OpenShift VM disaster recovery automation
 
+**Understand the AAP surveys:** [Protection and failover survey guide with test scenarios](docs/SURVEY-GUIDE-AND-TESTS.md) explains every field, valid/invalid combinations, multi-namespace groups, fencing versus stopping, snapshot age, final-sync limitations, and read-only versus disruptive tests.
+
 **Reset a completed failover test:** follow [the lab cleanup and restart guide](docs/LAB-CLEANUP.md). It records the cleanup reported successful on 23 November 2026, preserves AAP/storage infrastructure, and explains how to enroll a fresh VM for the next test.
 
 **New or recreated clusters? Follow the [one-pass rebuild runbook](docs/RUNBOOK.md)**: ordered steps, checkpoints, and the mistakes from the first lab, so you don't repeat the trial and error. The [detailed rebuild guide](docs/REBUILD.md) explains each stage in depth. It covers prerequisites, optional ACM, AAP installation, credentials, all initial templates and surveys, replication, failover, acceptance tests and troubleshooting. The [bootstrap manifests](bootstrap/) contain the non-secret starting resources.

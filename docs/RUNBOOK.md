@@ -258,6 +258,8 @@ Never attach both OpenShift credentials to one job. Launch both prechecks.
 
 ## 10. Turn on protection (≈15–30 min)
 
+Before selecting survey values, see [the survey explanations and test matrix](SURVEY-GUIDE-AND-TESTS.md). It covers scope/list combinations, multiple namespaces, custom destinations, and validation-only checks.
+
 Launch **`Enable DR Protection`** (always the workflow, never its child jobs):
 
 | Question | Answer |
@@ -294,6 +296,8 @@ PROD: Application `Ready`, Snapshot `Completed`, Schedule present. DR: AMR `Esta
 ---
 
 ## 12. Fail over to DR
+
+See [the failover field explanations and decision tables](SURVEY-GUIDE-AND-TESTS.md#4-fail-over-to-dr-fields) before launching. Source isolation mode controls whether Ansible stops PROD; fencing confirmation does not override that mode. This workflow requires acceptance of the existing replica and does not perform a final sync.
 
 Wait at least one 5-minute interval after step 7's marker, then launch **Fail Over to DR**:
 
