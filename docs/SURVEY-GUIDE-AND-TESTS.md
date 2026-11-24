@@ -106,10 +106,19 @@ Example: `my-vm/web-vm` and `my-vm/db-vm` may map to `vmdr` together. But
 implementation. Keep source names produces `my-vm → my-vm` and
 `my-vm2 → my-vm2` on DR.
 
+Note : Names must be unique within a namespace, not across namespaces. Kubernetes documentation
+
+For example, these can coexist:
+- my-vm/db-vm
+- my-vm2/db-vm
+But if you restore both into vmdr, preserving their names, both become vmdr/db-vm—a collision. One would need a different name, or they must remain in separate namespaces.
+
 The custom-name assertion checks syntax, not whether the target namespace exists,
 is empty, or is suitable for recovery. Destination-side enrollment checks happen
 later. Use dedicated workload namespaces; a syntactically valid name is not proof
 that using it is operationally appropriate.
+
+
 
 ### Disk and interval checks
 
