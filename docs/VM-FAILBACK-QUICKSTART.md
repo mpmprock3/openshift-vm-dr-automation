@@ -77,3 +77,40 @@ Established. Hard-killed jobs require the documented lock-recovery procedure.
 Local tests do not prove live NetApp or guest-data behavior. Qualify DC → DR → DC
 and interruption/retry behavior on the actual infrastructure before customer use;
 see [the full testing instructions](ONE-CLICK-RECOVERY.md#local-verification).
+
+## What protects DR writes during failback
+
+This follows NetApp's [failback and reverse-direction procedure](https://docs.netapp.com/us-en/trident-2602/trident-protect/trident-protect-use-snapmirror-replication.html#fail-back-applications-to-the-original-source-cluster):
+reverse resync first, then shut down the active source and promote the final
+snapshot by its exact archive basename. A normal resync of the old forward
+relationship would discard DR writes and must not be used for failback.
+
+The final snapshot gate rejects failed snapshots, missing or duplicate PVC IDs,
+incomplete volume-snapshot counts, a changed ShutdownSnapshot UID during the
+wait, and an archive that does not identify a snapshot of the enrolled DR
+Application UID. Promotion rejects stale or future-dated isolation evidence.
+If a check fails, the job stops; it does not fall back to an older recovery point
+or automatically restart DR. Resolve the cause and resume the same plan.
+
+The downtime window must prevent GitOps, operators, or other automation from
+recreating/restarting the source VM after shutdown. The workflow checks that its
+VMI is absent and VM definition cannot restart itself, but its lock does not
+control external writers. Stop application traffic and gracefully flush/stop
+applications as required by their consistency model before the move.
+
+For a Linux test guest, create a unique marker **inside the active DR VM**, on
+each protected persistent filesystem (not a temporary or container disk):
+
+```bash
+marker=/path/on/protected/disk/failback-proof-$(date -u +%Y%m%dT%H%M%SZ).txt
+printf 'Written on DR before planned failback: %s\n' "$(date -u +%FT%TZ)" > "$marker"
+sync
+sha256sum "$marker"
+```
+
+Save the path and checksum outside the VM. After successful failback, run
+`sha256sum` on the same file inside the DC guest and compare it with the saved
+value. Also verify existing files and application-native committed transactions;
+a single marker is evidence for that recovery point, not a proof of every byte
+or database consistency. Keep the job log and snapshot/AMR status with the guest
+results. A green VM readiness check alone does not establish zero data loss.

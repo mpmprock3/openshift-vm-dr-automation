@@ -168,6 +168,20 @@ run('resume-after-release')
 assert record(read())['data']['phase'] == 'protected'
 run('completed-retry')
 assert read()['promotions'] == 1 and read()['shutdowns'] == 1
+# Exercise data-preservation failures specifically while DR is the active source.
+dr_active = read()
+for fault in ['missing-disk', 'duplicate-disk', 'missing-volume-snapshot', 'wrong-archive', 'restartable-vm']:
+    failed = copy.deepcopy(dr_active)
+    failed['shutdown_fault'] = fault
+    write(failed)
+    run('failback-' + fault, extra={'recovery_target_site': 'dc'}, success=False)
+    assert read()['promotions'] == dr_active['promotions'], 'Unsafe failback promoted DC'
+    assert record(read())['data']['phase'] == 'checked'
+    assert record(read())['data']['owner'] == ''
+failed = copy.deepcopy(dr_active); failed['fail_shutdown'] = True; write(failed)
+run('failback-failed-shutdown', extra={'recovery_target_site': 'dc'}, success=False)
+assert read()['promotions'] == dr_active['promotions']
+write(dr_active)
 run('failback', extra={'recovery_target_site': 'dc'})
 run('second-failover')
 assert read()['promotions'] == 3 and read()['shutdowns'] == 3

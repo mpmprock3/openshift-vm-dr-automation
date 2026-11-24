@@ -291,7 +291,9 @@ python tests/recovery_plan/run.py work/vm-only-tests --vm-only
 
 The new harness uses disposable Kubernetes doubles and a local TLS AAP/health
 fixture. It exercises setup/rerun, shared-lock contention and CAS races, failed
-shutdown rejection, recovery after mirror release, completed retry, repeated
+shutdown rejection, DR-to-DC rejection of missing/duplicate disks, incomplete
+volume snapshots, wrong archive paths and restartable source VMs, recovery after
+mirror release, completed retry, repeated
 bidirectional moves, source-unavailable recovery, reprotection resume and stale
 replica rejection. It also checks that unrelated workloads and a legacy AAP
 workflow sentinel are unchanged. It requires OpenSSL and a free localhost port.

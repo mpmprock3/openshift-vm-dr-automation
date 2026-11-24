@@ -85,6 +85,12 @@ def run(action):
                         db.setdefault('saved_vm',{})[site]=copy.deepcopy(next(x for x in rows if x['kind']=='VirtualMachine' and x['metadata'].get('namespace')==ns))
                         rows[:]=[x for x in rows if not (x['kind'] in ['VirtualMachine','VirtualMachineInstance'] and x['metadata'].get('namespace')==ns)]
                         db['shutdowns']=db.get('shutdowns',0)+1
+                        fault = db.get('shutdown_fault')
+                        if fault == 'missing-disk': obj['status']['pvcs'] = []
+                        if fault == 'duplicate-disk': obj['status']['pvcs'] *= 2
+                        if fault == 'missing-volume-snapshot': obj['status']['volumeSnapshots'] = []
+                        if fault == 'wrong-archive': obj['status']['appArchivePath'] = app['metadata']['name']+'_'+app['metadata']['uid']+'/backups/not-a-snapshot'
+                        if fault == 'restartable-vm': rows.append(copy.deepcopy(db['saved_vm'][site]))
             if kind=='AppMirrorRelationship':
                 source='dr' if site=='dc' else 'dc'
                 sns=obj['spec']['namespaceMapping'][0]['source'];dns=obj['spec']['namespaceMapping'][0]['destination']

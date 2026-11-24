@@ -6,9 +6,13 @@
   ansible.builtin.assert:
     that:
       - lr_plan.destination_api == (recovery_cluster_api | default(lookup('env', 'K8S_AUTH_HOST'))) | regex_replace('/$', '')
+      - lr_snapshot.uid | default('') | length > 0
+      - lr_snapshot.archive.split('/') | length == 3
+      - lr_snapshot.archive.split('/')[-1] | length > 0
       - lr_snapshot.mirror_uid == lr_plan.mirror_uid
-      - lr_snapshot.archive.startswith(lr_plan.application ~ '_' ~ lr_plan.application_uid ~ '/')
+      - lr_snapshot.archive.startswith(lr_plan.application ~ '_' ~ lr_plan.application_uid ~ '/snapshots/')
       - (now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') | to_datetime('%Y-%m-%dT%H:%M:%SZ') - lr_snapshot.checked_at | to_datetime('%Y-%m-%dT%H:%M:%SZ')).total_seconds() < 600
+      - (now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') | to_datetime('%Y-%m-%dT%H:%M:%SZ') - lr_snapshot.checked_at | to_datetime('%Y-%m-%dT%H:%M:%SZ')).total_seconds() >= 0
 - name: Read destination replica immediately before promotion
   kubernetes.core.k8s_info:
     api_version: '{{ recovery_api_version }}'
