@@ -1,5 +1,7 @@
 # Fail Back to DC after the existing Fail Over to DR
 
+**For a first lab run, use [the simple step-by-step guide](LAB-FAILBACK-EASY.md).** The reference details below are for administrators.
+
 Use the existing **Fail Over to DR**, then **Fail Back to DC**. Both use the
 existing protection catalog and OpenShift API credentials. No multi-cluster
 credential, separate recovery-plan inventory, or manual enrollment job is needed.

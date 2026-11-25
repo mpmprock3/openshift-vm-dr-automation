@@ -1,5 +1,7 @@
 # OpenShift VM disaster recovery automation
 
+**Already failed over to DR and want to test failback? Follow the [simple lab steps](docs/LAB-FAILBACK-EASY.md).** They use your existing AAP setup and explain testing the unmerged PR.
+
 **Continue from your existing Fail Over to DR:** use [Fail Back to DC — setup and operator guide](docs/FAILBACK-CONTINUATION.md). The survey selects the existing protected group. Ansible handles first-time enrollment internally, returns to a dedicated PROD namespace while retaining the old stopped copy, and updates the existing failover catalog for repeat cycles. No new multi-cluster credential or separate operator workflow is needed. This implementation requires live qualification before customer use.
 
 The [older VMDR recovery runner](docs/VM-FAILBACK-QUICKSTART.md) and [21 November lab record](docs/TEST-VM-AAP-RUNBOOK.md) describe a different operating path and historical environment, not the setup for this continuation. Do not mix the two paths for one VM.
