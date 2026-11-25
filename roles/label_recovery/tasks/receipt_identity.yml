@@ -1,0 +1,23 @@
+---
+- kubernetes.core.k8s_info:
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    namespace: '{{ lr_old_plan.destination_namespace }}'
+    label_selectors:
+      - '{{ lr_old_plan.label_key }}={{ lr_old_plan.application }}'
+  register: lr_receipt_current_vms
+  no_log: true
+- kubernetes.core.k8s_info:
+    api_version: v1
+    kind: PersistentVolumeClaim
+    namespace: '{{ lr_old_plan.destination_namespace }}'
+    label_selectors:
+      - '{{ lr_old_plan.label_key }}={{ lr_old_plan.application }}'
+  register: lr_receipt_current_pvcs
+- ansible.builtin.assert:
+    that:
+      - lr_receipt_current_vms.resources | map(attribute='metadata.uid') | sort == (lr_receipt.resources[0].data['recovered.json'] | from_json).vm_uids
+      - lr_receipt_current_pvcs.resources | map(attribute='metadata.uid') | sort == (lr_receipt.resources[0].data['recovered.json'] | from_json).pvc_uids
+      - lr_receipt_current_vms.resources | map(attribute='status.ready') | unique | list == [true]
+      - lr_receipt_current_pvcs.resources | map(attribute='status.phase') | unique | list == ['Bound']
+    fail_msg: Recovered workloads differ from the saved cutover receipt. Refuse automatic adoption or reprotection.

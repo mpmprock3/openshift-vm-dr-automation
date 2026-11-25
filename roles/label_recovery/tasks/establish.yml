@@ -6,7 +6,7 @@
   ansible.builtin.assert:
     that:
       - lr_establish_plan.schema_version == 2
-      - lr_establish_plan.destination_api == lookup('env', 'K8S_AUTH_HOST') | regex_replace('/$', '')
+      - lr_establish_plan.destination_api == (recovery_cluster_api | default(lookup('env', 'K8S_AUTH_HOST'))) | regex_replace('/$', '')
       - lr_establish_plan.source_api != lr_establish_plan.destination_api
       - lr_establish_plan.destination_namespace not in ['default', 'kube-system', 'kube-public']
       - not lr_establish_plan.destination_namespace.startswith('openshift')
@@ -71,7 +71,8 @@
   ansible.builtin.assert:
     that:
       - lr_resume_guard_passed | default(false) or lr_destination_workloads.results | map(attribute='resources') | flatten | length == 0
-      - lr_destination_workloads.results | map(attribute='resources') | flatten | rejectattr('kind', 'equalto', 'PersistentVolumeClaim') | list | length == 0
+      - lr_destination_workloads.results | map(attribute='resources') | flatten | rejectattr('kind', 'in', ['PersistentVolumeClaim', 'VirtualMachine']) | list | length == 0
+      - lr_destination_workloads.results | map(attribute='resources') | flatten | selectattr('kind', 'equalto', 'VirtualMachine') | map(attribute='metadata.uid') | difference(lr_verified_stopped_vms | default([])) | length == 0
     fail_msg: Recovery destination already contains workloads or disks. Nothing will be overwritten.
   when: lr_existing_mirror.resources | length == 0
 - name: Validate existing relationship identity and direction
@@ -151,12 +152,18 @@
   loop: '{{ lr_establish_plan.pvcs }}'
   register: lr_destination_pvcs
   failed_when: lr_destination_pvcs.resources | length != 1 or lr_destination_pvcs.resources[0].status.phase != 'Bound'
+- name: Prepare internal stage outputs
+  ansible.builtin.set_fact:
+    lr_outputs:
+      label_replica_uid: '{{ lr_ready.resources[0].metadata.uid }}'
 - name: Pass replica identity for a separate cutover job
+  register: lr_stage_artifacts
   ansible.builtin.set_stats:
     per_host: false
     aggregate: false
     data:
       label_replica_uid: '{{ lr_ready.resources[0].metadata.uid }}'
+  when: recovery_export_artifacts | default(true) | bool
 - ansible.builtin.debug:
     msg:
       result: Replica Established. No VM cutover has been requested.

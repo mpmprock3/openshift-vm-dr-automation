@@ -1,0 +1,38 @@
+---
+- ansible.builtin.include_tasks: inputs.yml
+- ansible.builtin.assert:
+    that: cluster_api == fc.original.source_api
+- name: Check whether this operation already began reverse replication
+  kubernetes.core.k8s_info:
+    api_version: '{{ fc_api }}'
+    kind: AppMirrorRelationship
+    namespace: '{{ fc.destination_namespace }}'
+    name: '{{ fc.application }}-mirror'
+  register: fc_prepared_mirror
+- name: Validate the original PROD application and stopped VM identities before first establishment
+  ansible.builtin.include_role:
+    name: vmdr
+    tasks_from: assess_failback_dc
+  vars:
+    failback_assessment:
+      plan: '{{ fc.original }}'
+  when: fc.cutover is not defined and fc_prepared_mirror.resources | length == 0
+- name: Reject an existing namespace before the first reverse copy
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Namespace
+    name: '{{ fc.destination_namespace }}'
+  register: fc_namespace
+- ansible.builtin.assert:
+    that:
+      - fc_namespace.resources[0].metadata.labels['app.kubernetes.io/managed-by'] | default('') == fc_owner
+      - fc_namespace.resources[0].metadata.labels['vmdr.aap/protection-group'] | default('') == fc.application
+  when: fc_namespace.resources | length > 0
+- name: Remove only the enrolled original PROD application's managed schedules
+  ansible.builtin.include_role:
+    name: vmdr
+    tasks_from: reverse_remove_schedule
+  when: fc.cutover is not defined and fc_prepared_mirror.resources | length == 0
+  loop: "{{ failback_dc_schedules.resources | default([]) | selectattr('spec.applicationRef', 'equalto', fc.original.application_name) | list }}"
+  loop_control:
+    loop_var: reverse_schedule

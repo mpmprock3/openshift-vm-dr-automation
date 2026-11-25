@@ -1,8 +1,10 @@
 # OpenShift VM disaster recovery automation
 
-**Current cleaned POC:** follow [the three-workflow operating guide](docs/CLEAN-POC.md). The legacy templates listed later in this README were removed from the current AAP instance; do not recreate them for this protection group.
+**Already failed over to DR and want to test failback? Follow the [simple lab steps](docs/LAB-FAILBACK-EASY.md).** They use your existing AAP setup and explain testing the unmerged PR.
 
-**Failback incident recovery:** use the [label-based recovery guide](docs/LABEL-RECOVERY.md) for the new dedicated-namespace path. The legacy failback workflow's site-specific PV/pod filters failed live Application reuse checks. Do not copy a DR filter onto a DC Application to bypass that check.
+**Continue from your existing Fail Over to DR:** use [Fail Back to DC — setup and operator guide](docs/FAILBACK-CONTINUATION.md). The survey selects the existing protected group. Ansible handles first-time enrollment internally, returns to a dedicated PROD namespace while retaining the old stopped copy, and updates the existing failover catalog for repeat cycles. No new multi-cluster credential or separate operator workflow is needed. This implementation requires live qualification before customer use.
+
+The [older VMDR recovery runner](docs/VM-FAILBACK-QUICKSTART.md) and [21 November lab record](docs/TEST-VM-AAP-RUNBOOK.md) describe a different operating path and historical environment, not the setup for this continuation. Do not mix the two paths for one VM.
 
 **New or recreated clusters? Start with the [step-by-step rebuild guide](docs/REBUILD.md).** It covers prerequisites, optional ACM, AAP installation, credentials, all initial templates and surveys, replication, failover, acceptance tests and troubleshooting. The [bootstrap manifests](bootstrap/) contain the non-secret starting resources.
 

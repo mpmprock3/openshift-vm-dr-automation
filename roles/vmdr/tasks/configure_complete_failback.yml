@@ -6,9 +6,15 @@
     failover_node_ids: {}
 - name: Reuse existing working template configuration
   ansible.builtin.include_tasks: read_base_template.yml
-  loop: [Configure DC Protection, Establish DR Replication, Refresh Failback Choices]
+  loop: [Configure DC Protection, Establish DR Replication, Refresh VM Choices]
   loop_control:
     loop_var: base_template_name
+- name: Require the reviewed project to be shared by both existing cluster templates
+  ansible.builtin.assert:
+    that:
+      - base_templates['Configure DC Protection'].project == base_templates['Establish DR Replication'].project
+      - awx_project_id is not defined or awx_project_id | int == base_templates['Configure DC Protection'].project | int
+    fail_msg: Pin the existing DC and DR base templates and this setup job to the same reviewed project before configuring continuation stages.
 - name: Create or verify reverse stage templates
   ansible.builtin.include_tasks: configure_failover_job.yml
   loop:
@@ -19,7 +25,7 @@
     - {name: Shutdown Failback DR, playbook: shutdown_failback_dr.yml, base: Establish DR Replication}
     - {name: Recover Failback DC, playbook: recover_failback_dc.yml, base: Configure DC Protection}
     - {name: Reprotect Failback DR, playbook: reprotect_failback_dr.yml, base: Establish DR Replication}
-    - {name: Refresh Failback Groups, playbook: refresh_failback_groups.yml, base: Refresh Failback Choices}
+    - {name: Refresh Failback Groups, playbook: refresh_failback_groups.yml, base: Establish DR Replication}
   loop_control:
     loop_var: failover_job
 - ansible.builtin.include_tasks: survey_api.yml

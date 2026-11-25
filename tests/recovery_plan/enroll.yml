@@ -1,0 +1,29 @@
+---
+- hosts: localhost
+  gather_facts: false
+  connection: local
+  module_defaults:
+    kubernetes.core.k8s_info: {host: 'https://dc'}
+    kubernetes.core.k8s: {host: 'https://dc'}
+    kubernetes.core.k8s_json_patch: {host: 'https://dc'}
+  tasks:
+    - ansible.builtin.include_role:
+        name: label_recovery
+        tasks_from: enroll
+      vars:
+        recovery_cluster_api: https://dc
+        recovery_application_name: finance
+        recovery_source_namespace: dc-vms
+        recovery_destination_namespace: dr-vms
+        recovery_destination_api: https://dr
+        recovery_vms: [database]
+    - block:
+        - ansible.builtin.include_role:
+            name: label_recovery
+            tasks_from: establish
+          vars:
+            recovery_cluster_api: https://dr
+      module_defaults:
+        kubernetes.core.k8s_info: {host: 'https://dr'}
+        kubernetes.core.k8s: {host: 'https://dr'}
+        kubernetes.core.k8s_json_patch: {host: 'https://dr'}

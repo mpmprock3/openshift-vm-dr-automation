@@ -21,22 +21,23 @@
   loop_control:
     loop_var: failback_choice_catalog
     label: "{{ failback_choice_catalog.metadata.name }}"
-- name: Discover resumable reverse operation records
+- name: Discover resumable continuation records
   kubernetes.core.k8s_info:
     api_version: v1
     kind: ConfigMap
     label_selectors:
-      - app.kubernetes.io/component=reverse-replication-plan
+      - app.kubernetes.io/component=failback-continuation
       - "app.kubernetes.io/managed-by={{ protect_owner }}"
-  register: reverse_choice_records
-  when: failback_survey_template_type | default('job_templates') == 'workflow_job_templates'
-- name: Include saved reverse operations for retry after AMR release
+  register: fc_choice_records
+- name: Include interrupted operations after the old mirror has been released
   ansible.builtin.set_fact:
-    failback_choices: "{{ failback_choices + [saved.assessment.plan.protection_plan ~ ' (' ~ (saved.assessment.plan.selected_vms | map(attribute='vm') | join(', ')) ~ ') | ' ~ saved.target] }}"
+    failback_choices: "{{ failback_choices + [saved.original.protection_plan ~ ' (' ~ (saved.original.selected_vms | map(attribute='vm') | join(', ')) ~ ') | ' ~ saved.target] }}"
   vars:
-    saved: "{{ item.data['plan.json'] | from_json }}"
-  loop: "{{ reverse_choice_records.resources | default([]) }}"
-  when: saved.source_api == cluster_api
+    saved: '{{ item.data["state.json"] | from_json }}'
+  loop: '{{ fc_choice_records.resources }}'
+  when:
+    - saved.original.destination_api == cluster_api
+    - saved.phase != 'complete'
 - name: Find the preparation job template
   ansible.builtin.include_tasks: survey_api.yml
   vars:
@@ -50,8 +51,8 @@
   ansible.builtin.set_fact:
     failback_job_path: "/api/controller/v2/{{ failback_survey_template_type | default('job_templates') }}/{{ survey_response.json.results[0].id }}/"
     failback_choice_survey:
-      name: Failback preparation
-      description: Select the protected group currently active on DR. Tracking IDs are automatic.
+      name: Return VMs to PROD
+      description: Select the protected group currently active on DR. Preparation and tracking IDs are automatic. The first return uses a dedicated PROD namespace and retains the old stopped copy.
       spec:
         - question_name: "{{ 'Which protected VM group should return to DC?' if failback_survey_template_name | default('') == 'Fail Back to DC' else 'Which protected VM group should be prepared for return to DC?' }}"
           question_description: "{{ 'Planned failback stops the selected DR VMs, recovers DC from the final shutdown snapshot, and restores DC-to-DR replication.' if failback_survey_template_name | default('') == 'Fail Back to DC' else 'Establish DR-to-DC replication, removing the old promoted AMR and enrolled DC schedules. DR remains active; no final cutover.' if failback_survey_template_type | default('job_templates') == 'workflow_job_templates' else 'Prepare a DR baseline snapshot. This does not perform cutover.' }}"
@@ -62,6 +63,10 @@
           min: 0
           max: 1024
           choices: "{{ (failback_choices | unique | sort) if failback_choices | length > 0 else ['No eligible promoted groups — refresh after failover'] }}"
+- name: Explain and select the destination policy for complete failback
+  ansible.builtin.set_fact:
+    failback_choice_survey: "{{ failback_choice_survey | combine({'spec': failback_choice_survey.spec + [{'question_name': 'Where should the VM return on PROD?', 'question_description': 'First return creates a dedicated PROD namespace and retains the original stopped VM/disk. Later cycles reuse that new namespace. Original namespace reuse is not supported by this continuation.', 'variable': 'failback_destination_policy', 'type': 'multiplechoice', 'required': true, 'default': 'Dedicated PROD namespace (retain old copy)', 'choices': ['Dedicated PROD namespace (retain old copy)']}]}) }}"
+  when: failback_survey_template_name | default('') == 'Fail Back to DC'
 - name: Add optional application verification for complete failback
   ansible.builtin.set_fact:
     failback_choice_survey: "{{ failback_choice_survey | combine({'spec': failback_choice_survey.spec + [{'question_name': 'Optional DC application health URL (HTTP 200 expected)', 'question_description': 'Use an endpoint that resolves to the recovered DC application. Leave empty to verify VM readiness only.', 'variable': 'failback_health_url', 'type': 'text', 'required': false, 'default': '', 'min': 0, 'max': 2048}]}) }}"
@@ -72,7 +77,7 @@
     survey_path: "{{ failback_job_path }}survey_spec/"
 - name: Refuse to replace unrelated survey questions
   ansible.builtin.assert:
-    that: survey_response.json.spec | default([]) | map(attribute='variable') | difference(['failback_group', 'recovery_target', 'failback_request_id', 'failback_health_url']) | length == 0
+    that: survey_response.json.spec | default([]) | map(attribute='variable') | difference(['failback_group', 'recovery_target', 'failback_request_id', 'failback_health_url', 'failback_destination_policy']) | length == 0
 - name: Save the customer selection survey
   ansible.builtin.include_tasks: survey_api.yml
   vars:

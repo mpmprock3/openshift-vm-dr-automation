@@ -3,7 +3,7 @@
     lr_reprotect_plan: '{{ label_reprotection_plan }}'
 - ansible.builtin.assert:
     that:
-      - lr_reprotect_plan.destination_api == lookup('env', 'K8S_AUTH_HOST') | regex_replace('/$', '')
+      - lr_reprotect_plan.destination_api == (recovery_cluster_api | default(lookup('env', 'K8S_AUTH_HOST'))) | regex_replace('/$', '')
       - lr_reprotect_plan.retired_pvc_uids | length > 0
 - name: Verify retained destination Application
   kubernetes.core.k8s_info:

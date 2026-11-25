@@ -1,4 +1,8 @@
-# Legacy failback implementation
+# Historical legacy failback implementation
+
+**For the current continuation from Fail Over to DR, use [FAILBACK-CONTINUATION.md](FAILBACK-CONTINUATION.md).** This page records the superseded filter-based implementation and its incident; its launch instructions must not be used with the continuation revision.
+
+**For the current migrated `test-vm`, follow [the AAP operator runbook](TEST-VM-AAP-RUNBOOK.md).** Its successful live run used **VMDR - Fail Back to DC**, not the legacy workflow described here.
 
 **For the replacement recovery path, use [Label Recovery](LABEL-RECOVERY.md).** This page documents the earlier implementation and its limitations. Its site-specific Application filters did not pass live reverse-replication qualification. Do not use filter copying to bypass destination Application reuse checks.
 

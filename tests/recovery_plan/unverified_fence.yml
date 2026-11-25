@@ -1,0 +1,4 @@
+---
+- ansible.builtin.set_fact:
+    recovery_fence_result:
+      verified: false

@@ -1,0 +1,10 @@
+---
+- name: Release only this job's lock and retain its durable checkpoint
+  kubernetes.core.k8s_json_patch:
+    api_version: v1
+    kind: ConfigMap
+    namespace: '{{ recovery_control_namespace }}'
+    name: '{{ rp_lock_name }}'
+    patch:
+      - {op: test, path: /data/owner, value: '{{ rp_owner }}'}
+      - {op: replace, path: /data/owner, value: ''}

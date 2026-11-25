@@ -42,6 +42,20 @@
       - recovery_plan.mirror_name == recovery_relationship
       - recovery_plan.mirror_namespace == recovery_namespace
       - recovery_plan.selected_vms | length > 0
+- name: Check that failback finished before allowing another failover
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ConfigMap
+    namespace: '{{ recovery_namespace }}'
+    name: "{{ recovery_plan.continuation_record | default('continue-' ~ ((recovery_namespace ~ '/' ~ recovery_relationship) | hash('sha256'))[:24]) }}"
+  register: recovery_continuation
+- name: Refuse failover during an incomplete return to PROD
+  ansible.builtin.assert:
+    that:
+      - recovery_continuation.resources[0].metadata.labels['app.kubernetes.io/managed-by'] | default('') == protect_owner
+      - (recovery_continuation.resources[0].data['state.json'] | from_json).phase == 'complete'
+    fail_msg: Failback is incomplete. Resume Fail Back to DC with the same group before starting another failover.
+  when: recovery_continuation.resources | length > 0
 - name: Read the replication relationship
   kubernetes.core.k8s_info:
     api_version: "{{ protect_api_version }}"

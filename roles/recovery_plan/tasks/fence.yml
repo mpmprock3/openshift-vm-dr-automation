@@ -1,0 +1,22 @@
+---
+- name: Clear any stale or operator-injected fencing result
+  ansible.builtin.set_fact:
+    recovery_fence_result: {}
+- name: Call the administrator-reviewed fencing provider
+  ansible.builtin.include_tasks: '{{ rp_config.fence_tasks }}'
+- name: Require freshly verified fencing for this exact plan and source
+  ansible.builtin.assert:
+    that:
+      - recovery_fence_result.verified | default(false) | bool
+      - recovery_fence_result.source_api | default('') == rp_config.sites[rp_source_site].api
+      - recovery_fence_result.plan | default('') == recovery_plan_name
+      - recovery_fence_result.reference | default('') | length > 0
+      - recovery_fence_result.checked_at is defined
+- ansible.builtin.set_fact:
+    rp_fence_age: "{{ (now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') | to_datetime('%Y-%m-%dT%H:%M:%SZ') - recovery_fence_result.checked_at | to_datetime('%Y-%m-%dT%H:%M:%SZ')).total_seconds() }}"
+- ansible.builtin.assert:
+    that:
+      - rp_fence_age | float >= 0
+      - rp_fence_age | float < 120
+- ansible.builtin.set_fact:
+    rp_artifacts: "{{ rp_artifacts | combine({'fencing': recovery_fence_result}) }}"

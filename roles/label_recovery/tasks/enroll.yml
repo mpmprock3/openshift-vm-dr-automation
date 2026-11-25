@@ -3,7 +3,7 @@
   ansible.builtin.assert:
     that:
       - not ansible_check_mode
-      - lookup('env', 'K8S_AUTH_HOST') is match('^https://[^/]+/?$')
+      - (recovery_cluster_api | default(lookup('env', 'K8S_AUTH_HOST'))) is match('^https://[^/]+/?$')
       - recovery_application_name is match('^[a-z][a-z0-9-]{0,61}[a-z0-9]$')
       - recovery_vms | length > 0
       - recovery_vms | unique | length == recovery_vms | length
@@ -41,7 +41,10 @@
       {{ (lr_disk_names +
           (item.resources[0].spec.template.spec.volumes | selectattr('dataVolume', 'defined') | map(attribute='dataVolume.name') | list) +
           (item.resources[0].spec.template.spec.volumes | selectattr('persistentVolumeClaim', 'defined') | map(attribute='persistentVolumeClaim.claimName') | list)) | unique | list }}
-    lr_vm_identities: '{{ lr_vm_identities + [{"name": item.item, "uid": item.resources[0].metadata.uid}] }}'
+    lr_vm_identities: >-
+      {{ lr_vm_identities + [{"name": item.item, "uid": item.resources[0].metadata.uid,
+          "pvcs": ((item.resources[0].spec.template.spec.volumes | selectattr('dataVolume', 'defined') | map(attribute='dataVolume.name') | list) +
+                   (item.resources[0].spec.template.spec.volumes | selectattr('persistentVolumeClaim', 'defined') | map(attribute='persistentVolumeClaim.claimName') | list)) | unique | sort}] }}
   loop: '{{ lr_vms.results }}'
   no_log: true
 - name: Read selected PVCs
@@ -205,7 +208,7 @@
       application_uid: '{{ lr_application_uid }}'
       source_namespace: '{{ recovery_source_namespace }}'
       destination_namespace: '{{ recovery_destination_namespace }}'
-      source_api: "{{ lookup('env', 'K8S_AUTH_HOST') | regex_replace('/$', '') }}"
+      source_api: "{{ (recovery_cluster_api | default(lookup('env', 'K8S_AUTH_HOST'))) | regex_replace('/$', '') }}"
       destination_api: '{{ recovery_destination_api }}'
       vault: '{{ recovery_vault }}'
       storage_class: '{{ recovery_storage_class }}'
@@ -228,11 +231,17 @@
           app.kubernetes.io/component: label-recovery-plan
       data:
         plan.json: '{{ label_recovery_plan | to_json }}'
+- name: Prepare internal stage outputs
+  ansible.builtin.set_fact:
+    lr_outputs:
+      label_recovery_plan: '{{ label_recovery_plan }}'
 - name: Pass enrollment to destination job
+  register: lr_stage_artifacts
   ansible.builtin.set_stats:
     per_host: false
     aggregate: false
     data:
       label_recovery_plan: '{{ label_recovery_plan }}'
+  when: recovery_export_artifacts | default(true) | bool
 - ansible.builtin.debug:
     msg: 'Retained baseline verified. Source VM is still running. Destination replication is a separate step.'

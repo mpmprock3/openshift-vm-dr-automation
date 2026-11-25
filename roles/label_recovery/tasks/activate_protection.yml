@@ -2,7 +2,7 @@
 - ansible.builtin.set_fact:
     lr_old_plan: '{{ label_cutover_plan }}'
 - ansible.builtin.assert:
-    that: lr_old_plan.destination_api == lookup('env', 'K8S_AUTH_HOST') | regex_replace('/$', '')
+    that: lr_old_plan.destination_api == (recovery_cluster_api | default(lookup('env', 'K8S_AUTH_HOST'))) | regex_replace('/$', '')
 - name: Require successful cutover receipt
   kubernetes.core.k8s_info:
     api_version: v1
@@ -15,6 +15,8 @@
       - lr_receipt.resources | length == 1
       - (lr_receipt.resources[0].data['plan.json'] | from_json).mirror_uid == lr_old_plan.mirror_uid
       - (lr_receipt.resources[0].data['snapshot.json'] | from_json).uid == label_final_snapshot.uid
+- name: Recheck exact recovered VM and disk incarnations before activation or retry
+  ansible.builtin.include_tasks: receipt_identity.yml
 - name: Read promoted relationship before release
   kubernetes.core.k8s_info:
     api_version: '{{ recovery_api_version }}'
@@ -27,7 +29,12 @@
     that:
       - lr_release.resources[0].metadata.uid == lr_old_plan.mirror_uid
       - lr_release.resources[0].status.state == 'Promoted'
-      - lr_release.resources[0].spec.promotedSnapshot == label_final_snapshot.archive.split('/')[-1]
+      - >-
+        (label_final_snapshot.mode | default('planned') == 'planned' and
+         lr_release.resources[0].spec.promotedSnapshot | default('') == label_final_snapshot.archive.split('/')[-1]) or
+        (label_final_snapshot.mode | default('planned') == 'disaster' and
+         lr_release.resources[0].spec.promotedSnapshot | default('') == '' and
+         (lr_release.resources[0].metadata.annotations | default({})).get('vmdr.aap/recovery-plan', '') == recovery_plan_name)
   when: lr_release.resources | length > 0
 - name: Read recovered Application
   kubernetes.core.k8s_info:
@@ -78,9 +85,15 @@
     recovery_storage_class: '{{ lr_old_plan.storage_class }}'
     recovery_interval_minutes: '{{ lr_old_plan.interval_minutes }}'
     recovery_baseline_seed: '{{ lr_old_plan.mirror_uid }}'
+- name: Prepare internal stage outputs
+  ansible.builtin.set_fact:
+    lr_outputs:
+      label_reprotection_plan: "{{ label_recovery_plan | combine({'retired_application_uid': lr_old_plan.application_uid, 'retired_pvc_uids': lr_old_plan.pvc_uids}) }}"
 - name: Pass exact stopped destination identities to reprotection
+  register: lr_stage_artifacts
   ansible.builtin.set_stats:
     per_host: false
     aggregate: false
     data:
       label_reprotection_plan: "{{ label_recovery_plan | combine({'retired_application_uid': lr_old_plan.application_uid, 'retired_pvc_uids': lr_old_plan.pvc_uids}) }}"
+  when: recovery_export_artifacts | default(true) | bool

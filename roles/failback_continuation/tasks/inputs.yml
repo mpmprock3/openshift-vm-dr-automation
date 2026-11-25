@@ -1,0 +1,9 @@
+---
+- name: Import workflow artifacts into private stage variables
+  ansible.builtin.set_fact:
+    fc: '{{ continuation_state }}'
+    fc_record_name: '{{ continuation_record_name }}'
+    fc_recovered: '{{ continuation_recovered | default(false) }}'
+    label_cutover_plan: '{{ continuation_cutover | default({}) }}'
+    label_final_snapshot: '{{ continuation_snapshot | default({}) }}'
+    label_reprotection_plan: '{{ continuation_protection | default({}) }}'

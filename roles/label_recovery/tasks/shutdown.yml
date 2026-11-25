@@ -4,8 +4,9 @@
 - name: Require the active source and recent target preflight
   ansible.builtin.assert:
     that:
-      - lr_plan.source_api == lookup('env', 'K8S_AUTH_HOST') | regex_replace('/$', '')
+      - lr_plan.source_api == (recovery_cluster_api | default(lookup('env', 'K8S_AUTH_HOST'))) | regex_replace('/$', '')
       - (now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') | to_datetime('%Y-%m-%dT%H:%M:%SZ') - lr_plan.checked_at | to_datetime('%Y-%m-%dT%H:%M:%SZ')).total_seconds() < 600
+      - (now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') | to_datetime('%Y-%m-%dT%H:%M:%SZ') - lr_plan.checked_at | to_datetime('%Y-%m-%dT%H:%M:%SZ')).total_seconds() >= 0
 - name: Read source selection
   kubernetes.core.k8s_info:
     api_version: '{{ recovery_api_version }}'
@@ -99,6 +100,7 @@
       data:
         plan.json: '{{ lr_plan | to_json }}'
 - name: Capture final disk data after application shutdown
+  register: lr_requested_final
   kubernetes.core.k8s:
     state: present
     definition:
@@ -123,9 +125,12 @@
 - name: Require exactly the enrolled disks in the final snapshot
   ansible.builtin.assert:
     that:
-      - lr_ready.resources[0].status.pvcs | unique | sort == lr_plan.pvc_uids | sort
+      - lr_ready.resources[0].metadata.uid == lr_requested_final.result.metadata.uid
+      - lr_ready.resources[0].status.pvcs | sort == lr_plan.pvc_uids | sort
       - lr_ready.resources[0].status.volumeSnapshots | length == lr_plan.pvc_uids | length
-      - lr_ready.resources[0].status.appArchivePath.startswith(lr_plan.application ~ '_' ~ lr_plan.application_uid ~ '/')
+      - lr_ready.resources[0].status.appArchivePath.split('/') | length == 3
+      - lr_ready.resources[0].status.appArchivePath.split('/')[-1] | length > 0
+      - lr_ready.resources[0].status.appArchivePath.startswith(lr_plan.application ~ '_' ~ lr_plan.application_uid ~ '/snapshots/')
 - name: Confirm enrolled source VMIs are absent
   kubernetes.core.k8s_info:
     api_version: kubevirt.io/v1
@@ -148,7 +153,16 @@
   register: lr_definitions
   failed_when: lr_definitions.resources | length > 0 and not (lr_definitions.resources[0].spec.runStrategy | default('') == 'Halted' or lr_definitions.resources[0].spec.running | default(true) == false)
   no_log: true
+- name: Prepare internal stage outputs
+  ansible.builtin.set_fact:
+    lr_outputs:
+      label_final_snapshot:
+        mirror_uid: '{{ lr_plan.mirror_uid }}'
+        uid: '{{ lr_ready.resources[0].metadata.uid }}'
+        archive: '{{ lr_ready.resources[0].status.appArchivePath }}'
+        checked_at: "{{ now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') }}"
 - name: Pass exact recovery point to promotion stage
+  register: lr_stage_artifacts
   ansible.builtin.set_stats:
     per_host: false
     aggregate: false
@@ -158,3 +172,4 @@
         uid: '{{ lr_ready.resources[0].metadata.uid }}'
         archive: '{{ lr_ready.resources[0].status.appArchivePath }}'
         checked_at: "{{ now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') }}"
+  when: recovery_export_artifacts | default(true) | bool

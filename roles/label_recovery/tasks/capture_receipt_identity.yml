@@ -1,0 +1,22 @@
+---
+- name: Read recovered VM identities for the durable receipt
+  kubernetes.core.k8s_info:
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    namespace: '{{ lr_plan.destination_namespace }}'
+    name: '{{ item.name }}'
+  loop: '{{ lr_plan.vms }}'
+  register: lr_receipt_vms
+  no_log: true
+- name: Read recovered disk identities for the durable receipt
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: PersistentVolumeClaim
+    namespace: '{{ lr_plan.destination_namespace }}'
+    name: '{{ item }}'
+  loop: '{{ lr_plan.pvcs }}'
+  register: lr_receipt_disks
+- ansible.builtin.set_fact:
+    lr_recovered_ids:
+      vm_uids: '{{ lr_receipt_vms.results | map(attribute="resources") | flatten | map(attribute="metadata.uid") | sort }}'
+      pvc_uids: '{{ lr_receipt_disks.results | map(attribute="resources") | flatten | map(attribute="metadata.uid") | sort }}'

@@ -1,0 +1,34 @@
+---
+- name: Require the managed replica and a healthy virtualization control plane
+  ansible.builtin.assert:
+    that:
+      - lr_cutover_amr.resources[0].metadata.labels['app.kubernetes.io/managed-by'] | default('') == (recovery_owner | default('aap-dr-poc'))
+      - lr_cutover_amr.resources[0].spec.desiredState in ['Established', 'Promoted']
+      - "lr_cutover_amr.resources[0].spec.namespaceMapping == [{'source': label_cutover_plan.source_namespace, 'destination': label_cutover_plan.destination_namespace}]"
+      - rp_journal.phase != 'idle' or lr_cutover_amr.resources[0].spec.desiredState == 'Established'
+      - lr_kubevirt.resources[0].status.conditions | default([]) | selectattr('type', 'equalto', 'Available') | selectattr('status', 'equalto', 'True') | list | length == 1
+    fail_msg: Initial recovery requires a managed Established replica and an Available KubeVirt control plane.
+- ansible.builtin.set_fact:
+    rp_schedulable_nodes: []
+- ansible.builtin.set_fact:
+    rp_schedulable_nodes: '{{ rp_schedulable_nodes + [item.metadata.name] }}'
+  loop: '{{ lr_nodes.resources }}'
+  when:
+    - item.metadata.name in lr_compute_candidates
+    - (item.metadata.labels | default({})).get('kubevirt.io/schedulable', '') == 'true'
+  no_log: true
+- ansible.builtin.assert:
+    that: rp_schedulable_nodes | length > 0
+- name: Refuse pre-existing target VMs and VMIs before initial promotion
+  kubernetes.core.k8s_info:
+    host: '{{ rp_config.sites[recovery_target_site].api }}'
+    kubeconfig: '{{ recovery_site_kubeconfigs[recovery_target_site] }}'
+    validate_certs: true
+    api_version: kubevirt.io/v1
+    kind: '{{ item }}'
+    namespace: '{{ label_cutover_plan.destination_namespace }}'
+  loop: [VirtualMachine, VirtualMachineInstance]
+  register: rp_target_live
+  failed_when: rp_target_live.resources | length > 0
+  when: lr_cutover_amr.resources[0].spec.desiredState == 'Established'
+  no_log: true

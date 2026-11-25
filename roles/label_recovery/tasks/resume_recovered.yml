@@ -53,7 +53,15 @@
     that:
       - lr_resume_disks.resources | map(attribute='metadata.uid') | sort == lr_plan.pvc_uids | sort
       - lr_resume_disks.resources | map(attribute='status.phase') | unique | list == ['Bound']
+- name: Prepare internal stage outputs
+  ansible.builtin.set_fact:
+    lr_outputs:
+      label_cutover_recovered: true
+      label_cutover_plan: '{{ lr_resume_receipt.data["plan.json"] | from_json }}'
+      label_final_snapshot: '{{ lr_resume_receipt.data["snapshot.json"] | from_json }}'
+      label_reprotection_plan: "{{ lr_plan | combine({'retired_application_uid': (lr_resume_receipt.data['plan.json'] | from_json).application_uid, 'retired_pvc_uids': (lr_resume_receipt.data['plan.json'] | from_json).pvc_uids}) }}"
 - name: Resume only reprotection without shutting down or promoting again
+  register: lr_stage_artifacts
   ansible.builtin.set_stats:
     per_host: false
     aggregate: false
@@ -62,5 +70,6 @@
       label_cutover_plan: '{{ lr_resume_receipt.data["plan.json"] | from_json }}'
       label_final_snapshot: '{{ lr_resume_receipt.data["snapshot.json"] | from_json }}'
       label_reprotection_plan: "{{ lr_plan | combine({'retired_application_uid': (lr_resume_receipt.data['plan.json'] | from_json).application_uid, 'retired_pvc_uids': (lr_resume_receipt.data['plan.json'] | from_json).pvc_uids}) }}"
+  when: recovery_export_artifacts | default(true) | bool
 - ansible.builtin.debug:
     msg: 'This group is already active here and its VM/PVC identities match the recovery catalog. Shutdown and promotion will be skipped; DR protection will be checked or completed.'
