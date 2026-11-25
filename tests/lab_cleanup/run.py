@@ -12,12 +12,13 @@ seed={s:[obj('Namespace','my-vm'),obj('Namespace','trident-protect'),obj('AppVau
       for s in ['prod','dr']}
 base=dict(lab_cleanup_prod_namespaces='my-vm',lab_cleanup_dr_namespaces='my-vm',lab_cleanup_mode='Preview')
 def reset(db=None):state.write_text(json.dumps(db or seed))
-def run(label,site,phase,variables,ok=True):
+def run(label,site,phase,variables,ok=True,env_overrides=None):
     env=dict(os.environ,LAB_CLEANUP_STATE=str(state),K8S_AUTH_HOST='https://'+site,K8S_AUTH_API_KEY='fixture',
         ANSIBLE_COLLECTIONS_PATH=str(ROOT/'tests/lab_cleanup/collections'),ANSIBLE_ROLES_PATH=str(ROOT/'roles'),
         ANSIBLE_LOCAL_TEMP=str(OUT/'local'),ANSIBLE_REMOTE_TEMP=str(OUT/'remote'),ANSIBLE_PIPELINING='true',
         ANSIBLE_CALLBACK_PLUGINS=str(ROOT/'tests/failback_continuation/callback_plugins'),
         ANSIBLE_CALLBACKS_ENABLED='vmdr_artifacts',VMDR_TEST_ARTIFACTS=str(artifacts))
+    env.update(env_overrides or {})
     vp=OUT/'vars.json';vp.write_text(json.dumps(dict(variables,ansible_python_interpreter=sys.executable)))
     artifacts.write_text('{}')
     result=subprocess.run(['ansible-playbook','-i','localhost,',f'lab_cleanup_{site}_{phase}.yml','-e','@'+str(vp)],cwd=ROOT,env=env,capture_output=True,text=True)
@@ -51,3 +52,13 @@ for site in ['prod','dr']:passed=run('absent-preview-'+site,site,'preview',passe
 for site in ['prod','dr']:run('absent-delete-'+site,site,'delete',passed)
 assert json.loads(state.read_text())==expected
 print('All cleanup checks passed; shared AppVault and infrastructure preserved.')
+
+for label,override,expected in [
+    ('missing-api', {'K8S_AUTH_HOST':''}, 'no valid K8S_AUTH_HOST'),
+    ('missing-token', {'K8S_AUTH_API_KEY':''}, 'no K8S_AUTH_API_KEY'),
+    ('bad-api', {'K8S_AUTH_HOST':'http://prod'}, 'no valid K8S_AUTH_HOST')]:
+    before=state.read_text()
+    run(label,'prod','preview',base,False,dict(override))
+    log=(OUT/(label+'.log')).read_text()
+    assert expected in log and 'censored' not in log
+    assert state.read_text()==before

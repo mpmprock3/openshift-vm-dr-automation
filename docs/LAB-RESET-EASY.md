@@ -79,3 +79,15 @@ Do not launch the internal stage jobs yourself. If deletion times out, inspect t
 For further cycles of this same group, repeat steps 4–5. **Do not enroll it again under a new protection plan after failback.** The existing recovery entry carries the continuation identity needed to reuse its dedicated PROD namespace.
 
 See [the failback guide](LAB-FAILBACK-EASY.md) for the failback survey and guest-data verification steps.
+
+## If the first validation fails
+
+The validation now reports separate, readable errors for job check mode, the survey action, deletion confirmation, API URL injection and API token injection. Credential values remain hidden.
+
+- For **Preview**, leave the confirmation blank; for **Delete**, enter exactly `DELETE LAB DATA`.
+- Launch the workflow as a normal Run job, not an Ansible Check job.
+- **Inspect Lab PROD** and **Delete Lab PROD** need the OpenShift PROD credential copied from **Configure DC Protection**.
+- **Inspect Lab DR** and **Delete Lab DR** need the OpenShift DR credential copied from **Establish DR Replication**.
+- **Configure Lab Cleanup** only needs **AAP Survey Updater**. That setup credential is not sufficient for the cluster inspection/deletion jobs.
+
+If a credential was missing on a base protection template, correct it and rerun **Configure Lab Cleanup** to attach it to the generated jobs. Do not share token values while troubleshooting.
