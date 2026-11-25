@@ -2,6 +2,8 @@
 
 Build the whole lab in one pass: **protect** a VM on PROD, **fail over** to DR, and **fail back** to PROD, all from AAP. Background and deeper detail: [REBUILD.md](REBUILD.md), [README](../README.md), and for failback [LAB-FAILBACK-EASY.md](https://github.com/mpmprock3/openshift-vm-dr-automation/blob/f604d65/docs/LAB-FAILBACK-EASY.md) / [FAILBACK-CONTINUATION.md](https://github.com/mpmprock3/openshift-vm-dr-automation/blob/f604d65/docs/FAILBACK-CONTINUATION.md).
 
+> 📖 **How it works:** [Every AAP job in this runbook: which playbook it runs, where it redirects, and what it changes →](RUNBOOK-PLAYBOOK-FLOW.md)
+
 The two clusters are **PROD** (where VMs normally run) and **DR** (the recovery site). They match your kubeconfig contexts:
 
 ```bash
@@ -341,7 +343,7 @@ The key data-preservation step is stage 5: PROD recovers from DR's **final Shutd
 
 All failback work runs through AAP. The few `oc` commands below only check the result.
 
-> **Status:** this code ([PR #2](https://github.com/mpmprock3/openshift-vm-dr-automation/pull/2), commit `c4cbb49`) passes automated API-fixture tests but hasn't been merged or run live in this lab. Treat this as a qualification run. Details: [LAB-FAILBACK-EASY.md](https://github.com/mpmprock3/openshift-vm-dr-automation/blob/f604d65/docs/LAB-FAILBACK-EASY.md), [FAILBACK-CONTINUATION.md](https://github.com/mpmprock3/openshift-vm-dr-automation/blob/f604d65/docs/FAILBACK-CONTINUATION.md).
+> **Status:** this code ([PR #2](https://github.com/mpmprock3/openshift-vm-dr-automation/pull/2), commit `c4cbb49`) passes automated API-fixture tests but hasn't been merged or run live in this lab. Treat this as a qualification run. What each stage runs: [RUNBOOK-PLAYBOOK-FLOW.md, Part C](RUNBOOK-PLAYBOOK-FLOW.md#part-c--failback-step-13). Details: [LAB-FAILBACK-EASY.md](https://github.com/mpmprock3/openshift-vm-dr-automation/blob/f604d65/docs/LAB-FAILBACK-EASY.md), [FAILBACK-CONTINUATION.md](https://github.com/mpmprock3/openshift-vm-dr-automation/blob/f604d65/docs/FAILBACK-CONTINUATION.md).
 
 ### 13.1 Load the failback code into AAP (≈5 min)
 
