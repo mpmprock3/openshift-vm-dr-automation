@@ -1,0 +1,25 @@
+---
+- ansible.builtin.include_tasks: validate.yml
+- name: Require both cluster inspections from this workflow
+  ansible.builtin.assert:
+    that:
+      - lab_cleanup_prod_manifest is defined
+      - lab_cleanup_dr_manifest is defined
+      - lab_cleanup_prod_manifest.api != lab_cleanup_dr_manifest.api
+    fail_msg: Launch Reset DR Lab, not the individual stage jobs. PROD and DR must be different clusters.
+- name: Load this cluster inspection
+  ansible.builtin.set_fact:
+    lc_approved: "{{ lookup('vars', 'lab_cleanup_' ~ lab_cleanup_site ~ '_manifest') }}"
+- name: Check cluster and namespace selection did not change
+  ansible.builtin.assert:
+    that:
+      - lc_approved.api == lookup('env', 'K8S_AUTH_HOST').rstrip('/')
+      - lc_approved.selection == lc_namespaces
+- name: Delete only inspected namespace identities
+  ansible.builtin.include_tasks: delete_namespace.yml
+  loop: '{{ lc_approved.namespaces }}'
+  loop_control:
+    loop_var: lc_namespace
+  when: lab_cleanup_mode | default('Preview') == 'Delete'
+- ansible.builtin.debug:
+    msg: "{{ 'Cleanup finished' if lab_cleanup_mode | default('Preview') == 'Delete' else 'Preview only; nothing deleted' }} on {{ lab_cleanup_site | upper }}."

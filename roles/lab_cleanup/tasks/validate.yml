@@ -1,0 +1,27 @@
+---
+- name: Validate cleanup intent and cluster credential
+  ansible.builtin.assert:
+    that:
+      - not ansible_check_mode
+      - lookup('env', 'K8S_AUTH_HOST') is match('^https://[^/]+/?$')
+      - lookup('env', 'K8S_AUTH_API_KEY') | length > 0
+      - lab_cleanup_mode | default('Preview') in ['Preview', 'Delete']
+      - lab_cleanup_mode | default('Preview') != 'Delete' or lab_cleanup_confirmation | default('') == 'DELETE LAB DATA'
+    fail_msg: Use Preview first. Deletion requires DELETE LAB DATA and the appropriate cluster credential.
+  no_log: true
+- name: Parse explicitly selected namespaces
+  ansible.builtin.set_fact:
+    lc_namespaces: "{{ lookup('vars', 'lab_cleanup_' ~ lab_cleanup_site ~ '_namespaces', default='').replace(',', ' ').split() | unique | list }}"
+- name: Require a bounded explicit namespace list
+  ansible.builtin.assert:
+    that:
+      - lc_namespaces | length > 0
+      - lc_namespaces | length <= 20
+- name: Refuse infrastructure and shared namespaces
+  ansible.builtin.assert:
+    that:
+      - item is match('^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$')
+      - item not in ['default', 'vmdr-control', 'aap', 'ansible-automation-platform', 'trident', 'trident-protect', 'kube-system', 'kube-public', 'kube-node-lease', 'openshift', 'openshift-virtualization']
+      - not item.startswith(('openshift-', 'kube-', 'trident-', 'aap-', 'ansible-'))
+    fail_msg: Only dedicated lab workload namespaces are allowed. Never select infrastructure or shared namespaces.
+  loop: '{{ lc_namespaces }}'

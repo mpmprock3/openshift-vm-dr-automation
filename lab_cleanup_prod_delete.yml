@@ -1,0 +1,11 @@
+---
+- name: Delete dedicated PROD lab namespaces
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - ansible.builtin.include_role:
+        name: lab_cleanup
+        tasks_from: delete
+      vars:
+        lab_cleanup_site: prod

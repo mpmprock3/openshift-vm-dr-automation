@@ -1,0 +1,33 @@
+---
+- name: Recheck namespace identity immediately before cleanup
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Namespace
+    name: '{{ lc_namespace.name }}'
+  register: lc_current
+- ansible.builtin.assert:
+    that:
+      - lc_current.resources | length == 0 or lc_current.resources[0].metadata.uid == lc_namespace.uid
+    fail_msg: Namespace was replaced after inspection. Refusing to delete it.
+- name: Clean up an existing dedicated namespace
+  when: lc_current.resources | length == 1
+  block:
+    - name: Recheck dedicated workload scope before deletion
+      ansible.builtin.include_tasks: inventory.yml
+    - name: Remove schedules then mirrors then applications through their controllers
+      ansible.builtin.include_tasks: delete_kind.yml
+      loop: [Schedule, AppMirrorRelationship, Application]
+      loop_control:
+        loop_var: lc_kind
+    - name: Delete dedicated namespace and all remaining workloads
+      kubernetes.core.k8s:
+        state: absent
+        api_version: v1
+        kind: Namespace
+        name: '{{ lc_namespace.name }}'
+        delete_options:
+          preconditions:
+            uid: '{{ lc_namespace.uid }}'
+        wait: true
+        wait_timeout: 900
+        wait_sleep: 10

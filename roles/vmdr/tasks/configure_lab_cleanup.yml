@@ -1,0 +1,116 @@
+---
+- ansible.builtin.set_fact:
+    base_templates: {}
+    failover_template_ids: {}
+    failover_node_ids: {}
+- ansible.builtin.include_tasks: read_base_template.yml
+  loop: [Configure DC Protection, Establish DR Replication]
+  loop_control:
+    loop_var: base_template_name
+- name: Require the same project on both cluster templates
+  ansible.builtin.assert:
+    that:
+      - base_templates['Configure DC Protection'].project == base_templates['Establish DR Replication'].project
+      - awx_project_id is not defined or awx_project_id | int == base_templates['Configure DC Protection'].project | int
+- ansible.builtin.include_tasks: configure_failover_job.yml
+  loop:
+    - {name: Inspect Lab PROD, playbook: lab_cleanup_prod_preview.yml, base: Configure DC Protection}
+    - {name: Inspect Lab DR, playbook: lab_cleanup_dr_preview.yml, base: Establish DR Replication}
+    - {name: Delete Lab PROD, playbook: lab_cleanup_prod_delete.yml, base: Configure DC Protection}
+    - {name: Delete Lab DR, playbook: lab_cleanup_dr_delete.yml, base: Establish DR Replication}
+  loop_control:
+    loop_var: failover_job
+- ansible.builtin.include_tasks: survey_api.yml
+  vars:
+    survey_path: "/api/controller/v2/workflow_job_templates/?{{ {'name': 'Enable DR Protection'} | urlencode }}"
+- ansible.builtin.assert:
+    that: survey_response.json.count == 1
+- ansible.builtin.set_fact:
+    lc_organization: '{{ survey_response.json.results[0].organization }}'
+- ansible.builtin.include_tasks: survey_api.yml
+  vars:
+    survey_path: "/api/controller/v2/workflow_job_templates/?{{ {'name': 'Reset DR Lab'} | urlencode }}"
+- name: Refuse to overwrite an unrelated workflow
+  ansible.builtin.assert:
+    that:
+      - survey_response.json.count | int <= 1
+      - survey_response.json.count == 0 or survey_response.json.results[0].description == 'Managed by vmdr lab cleanup setup'
+      - survey_response.json.count == 0 or survey_response.json.results[0].organization | int == lc_organization | int
+      - survey_response.json.count == 0 or not survey_response.json.results[0].allow_simultaneous
+- ansible.builtin.include_tasks: survey_api.yml
+  vars:
+    survey_path: /api/controller/v2/workflow_job_templates/
+    survey_method: POST
+    survey_body:
+      name: Reset DR Lab
+      description: Managed by vmdr lab cleanup setup
+      organization: '{{ lc_organization | int }}'
+      allow_simultaneous: false
+      survey_enabled: true
+  when: survey_response.json.count == 0
+- ansible.builtin.set_fact:
+    failover_workflow_id: "{{ survey_response.json.id | default((survey_response.json.results | default([{}]) | first).id) }}"
+- ansible.builtin.include_tasks: survey_api.yml
+  vars:
+    survey_path: '/api/controller/v2/workflow_job_templates/{{ failover_workflow_id }}/workflow_nodes/?page_size=200'
+- ansible.builtin.assert:
+    that:
+      - survey_response.json.next | default(none) == none
+      - survey_response.json.results | map(attribute='identifier') | difference(['inspect-prod', 'inspect-dr', 'delete-prod', 'delete-dr']) | length == 0
+- ansible.builtin.include_tasks: configure_failover_node.yml
+  loop:
+    - {identifier: inspect-prod, job: Inspect Lab PROD}
+    - {identifier: inspect-dr, job: Inspect Lab DR}
+    - {identifier: delete-prod, job: Delete Lab PROD}
+    - {identifier: delete-dr, job: Delete Lab DR}
+  loop_control:
+    loop_var: failover_node
+- ansible.builtin.include_tasks: configure_failover_edge.yml
+  loop:
+    - {source: inspect-prod, destination: inspect-dr}
+    - {source: inspect-dr, destination: delete-prod}
+    - {source: delete-prod, destination: delete-dr}
+    - {source: delete-dr, destination: ''}
+  loop_control:
+    loop_var: failover_edge
+- name: Install the cleanup survey
+  ansible.builtin.include_tasks: survey_api.yml
+  vars:
+    survey_path: '/api/controller/v2/workflow_job_templates/{{ failover_workflow_id }}/survey_spec/'
+    survey_method: POST
+    survey_body:
+      name: Reset dedicated lab workload namespaces
+      description: Deletes every resource in the named namespaces, including VM disks. Preserve infrastructure; run Preview first. Stop other DR workflows before Delete.
+      spec:
+        - question_name: 'PROD lab namespaces (comma separated)'
+          question_description: 'Dedicated workload namespaces only. Include the original VM namespace and any prod-return namespace to discard.'
+          variable: lab_cleanup_prod_namespaces
+          type: text
+          required: true
+          default: ''
+          min: 1
+          max: 1300
+        - question_name: 'DR lab namespaces (comma separated)'
+          question_description: 'Dedicated workload namespaces only. ALL contents will be deleted.'
+          variable: lab_cleanup_dr_namespaces
+          type: text
+          required: true
+          default: ''
+          min: 1
+          max: 1300
+        - question_name: 'What should this job do?'
+          variable: lab_cleanup_mode
+          type: multiplechoice
+          required: true
+          default: Preview
+          choices: [Preview, Delete]
+        - question_name: 'For Delete, type DELETE LAB DATA'
+          question_description: 'Leave blank for Preview. Confirms permanent deletion of ALL data in the selected namespaces.'
+          variable: lab_cleanup_confirmation
+          type: text
+          required: false
+          default: ''
+          min: 0
+          max: 30
+- ansible.builtin.debug:
+    msg: Reset DR Lab is configured. Launch Preview first. This setup has not changed either cluster.

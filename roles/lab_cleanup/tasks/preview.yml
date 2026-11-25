@@ -1,0 +1,36 @@
+---
+- ansible.builtin.include_tasks: validate.yml
+- name: Read namespace identities
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Namespace
+    name: '{{ item }}'
+  loop: '{{ lc_namespaces }}'
+  register: lc_namespace_results
+- name: Initialize deletion manifest
+  ansible.builtin.set_fact:
+    lc_manifest: []
+- name: Record existing namespaces by UID
+  ansible.builtin.set_fact:
+    lc_manifest: "{{ lc_manifest + [{'name': item.item, 'uid': item.resources[0].metadata.uid}] }}"
+  loop: '{{ lc_namespace_results.results }}'
+  when: item.resources | length == 1
+  loop_control:
+    label: '{{ item.item }}'
+- name: Show missing namespaces as already absent
+  ansible.builtin.debug:
+    msg: '{{ item.item }} is absent; nothing to delete.'
+  loop: '{{ lc_namespace_results.results }}'
+  when: item.resources | length == 0
+  loop_control:
+    label: '{{ item.item }}'
+- ansible.builtin.include_tasks: inventory.yml
+  loop: '{{ lc_manifest }}'
+  loop_control:
+    loop_var: lc_namespace
+- name: Export inspected identities to subsequent workflow stages
+  ansible.builtin.set_stats:
+    data: "{{ {('lab_cleanup_' ~ lab_cleanup_site ~ '_manifest'): {'api': lookup('env', 'K8S_AUTH_HOST').rstrip('/'), 'namespaces': lc_manifest, 'selection': lc_namespaces}} }}"
+    per_host: false
+- ansible.builtin.debug:
+    msg: 'Preview inspected {{ lab_cleanup_site | upper }}: {{ lc_namespaces }}. Delete removes ALL resources in these namespaces, including VM disks. No cluster resources were changed by this stage.'

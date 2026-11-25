@@ -1,0 +1,38 @@
+---
+- name: Refuse infrastructure or unrelated application workloads
+  kubernetes.core.k8s_info:
+    api_version: '{{ item.api }}'
+    kind: '{{ item.kind }}'
+    namespace: '{{ lc_namespace.name }}'
+  loop:
+    - {api: protect.trident.netapp.io/v1, kind: AppVault}
+    - {api: apps/v1, kind: Deployment}
+    - {api: apps/v1, kind: StatefulSet}
+    - {api: apps/v1, kind: DaemonSet}
+  register: lc_shared
+  no_log: true
+- ansible.builtin.assert:
+    that: lc_shared.results | map(attribute='resources') | flatten | length == 0
+    fail_msg: Namespace contains an AppVault or application controllers. Cleanup supports dedicated VM workload namespaces only.
+- name: Inspect workloads and protection objects without exposing secrets
+  kubernetes.core.k8s_info:
+    api_version: '{{ item.api }}'
+    kind: '{{ item.kind }}'
+    namespace: '{{ lc_namespace.name }}'
+  loop:
+    - {api: kubevirt.io/v1, kind: VirtualMachine}
+    - {api: v1, kind: PersistentVolumeClaim}
+    - {api: protect.trident.netapp.io/v1, kind: AppMirrorRelationship}
+    - {api: protect.trident.netapp.io/v1, kind: Application}
+    - {api: protect.trident.netapp.io/v1, kind: Schedule}
+  register: lc_inventory
+- name: Display main resources selected for deletion
+  ansible.builtin.debug:
+    msg:
+      cluster: '{{ lab_cleanup_site | upper }}'
+      namespace: '{{ lc_namespace.name }}'
+      kind: '{{ item.item.kind }}'
+      names: "{{ item.resources | map(attribute='metadata.name') | list }}"
+  loop: '{{ lc_inventory.results }}'
+  loop_control:
+    label: '{{ item.item.kind }}'

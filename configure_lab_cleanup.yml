@@ -1,0 +1,9 @@
+---
+- name: Configure Reset DR Lab without running cleanup
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - ansible.builtin.include_role:
+        name: vmdr
+        tasks_from: configure_lab_cleanup

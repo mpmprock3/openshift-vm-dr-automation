@@ -197,3 +197,7 @@ Local regression coverage: `ANSIBLE_ROLES_PATH=roles ansible-playbook -i localho
 ### Data-preserving failback
 
 See [FAILBACK.md](docs/FAILBACK.md) to install the **Fail Back to DC** AAP workflow with `configure_failback_workflow.yml`. It covers reverse replication, a final ShutdownSnapshot, DC promotion and verification, and restoration of DC-to-DR protection. Operators select a discovered group; tracking IDs are automatic. Local simulated tests do not replace live NetApp and guest-data acceptance testing.
+
+## Reset a disposable VM lab
+
+Use [Reset DR Lab](docs/LAB-RESET-EASY.md) for a survey-driven preview and deletion of explicitly selected PROD/DR workload namespaces. It preserves AAP, Trident and shared AppVault infrastructure.

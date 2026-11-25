@@ -1,0 +1,23 @@
+---
+- name: Read protection resources to remove
+  kubernetes.core.k8s_info:
+    api_version: protect.trident.netapp.io/v1
+    kind: '{{ lc_kind }}'
+    namespace: '{{ lc_namespace.name }}'
+  register: lc_objects
+- name: Delete protection resources without bypassing finalizers
+  kubernetes.core.k8s:
+    state: absent
+    api_version: protect.trident.netapp.io/v1
+    kind: '{{ lc_kind }}'
+    namespace: '{{ lc_namespace.name }}'
+    name: '{{ item.metadata.name }}'
+    delete_options:
+      preconditions:
+        uid: '{{ item.metadata.uid }}'
+    wait: true
+    wait_timeout: 600
+    wait_sleep: 5
+  loop: '{{ lc_objects.resources }}'
+  loop_control:
+    label: '{{ item.metadata.name }}'
