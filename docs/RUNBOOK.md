@@ -1,6 +1,6 @@
 # Runbook: OpenShift Virtualization DR with AAP (PROD ⇄ DR)
 
-Build the whole lab in one pass: **protect** a VM on PROD, **fail over** to DR, and **fail back** to PROD, all from AAP. Background and deeper detail: [REBUILD.md](REBUILD.md), [README](../README.md), and for failback [LAB-FAILBACK-EASY.md](https://github.com/mpmprock3/openshift-vm-dr-automation/blob/f604d65/docs/LAB-FAILBACK-EASY.md) / [FAILBACK-CONTINUATION.md](https://github.com/mpmprock3/openshift-vm-dr-automation/blob/f604d65/docs/FAILBACK-CONTINUATION.md).
+Build the whole lab in one pass: **protect** a VM on PROD, **fail over** to DR, and **fail back** to PROD, all from AAP. Background and deeper detail: [REBUILD.md](REBUILD.md), [README](../README.md), and for failback [LAB-FAILBACK-EASY.md](https://github.com/mpmprock3/openshift-vm-dr-automation/blob/eb83b6d/docs/LAB-FAILBACK-EASY.md) / [FAILBACK-CONTINUATION.md](https://github.com/mpmprock3/openshift-vm-dr-automation/blob/eb83b6d/docs/FAILBACK-CONTINUATION.md).
 
 > 📖 **How it works:** [Every AAP job in this runbook: which playbook it runs, where it redirects, and what it changes →](RUNBOOK-PLAYBOOK-FLOW.md)
 
@@ -343,7 +343,7 @@ The key data-preservation step is stage 5: PROD recovers from DR's **final Shutd
 
 All failback work runs through AAP. The few `oc` commands below only check the result.
 
-> **Status:** this code ([PR #2](https://github.com/mpmprock3/openshift-vm-dr-automation/pull/2), commit `c4cbb49`) passes automated API-fixture tests but hasn't been merged or run live in this lab. Treat this as a qualification run. What each stage runs: [RUNBOOK-PLAYBOOK-FLOW.md, Part C](RUNBOOK-PLAYBOOK-FLOW.md#part-c--failback-step-13). Details: [LAB-FAILBACK-EASY.md](https://github.com/mpmprock3/openshift-vm-dr-automation/blob/f604d65/docs/LAB-FAILBACK-EASY.md), [FAILBACK-CONTINUATION.md](https://github.com/mpmprock3/openshift-vm-dr-automation/blob/f604d65/docs/FAILBACK-CONTINUATION.md).
+> **Status:** this code ([PR #2](https://github.com/mpmprock3/openshift-vm-dr-automation/pull/2), commit `c4cbb49`) passes automated API-fixture tests but hasn't been merged or run live in this lab. Treat this as a qualification run. What each stage runs: [RUNBOOK-PLAYBOOK-FLOW.md, Part C](RUNBOOK-PLAYBOOK-FLOW.md#part-c--failback-step-13). Details: [LAB-FAILBACK-EASY.md](https://github.com/mpmprock3/openshift-vm-dr-automation/blob/eb83b6d/docs/LAB-FAILBACK-EASY.md), [FAILBACK-CONTINUATION.md](https://github.com/mpmprock3/openshift-vm-dr-automation/blob/eb83b6d/docs/FAILBACK-CONTINUATION.md).
 
 ### 13.1 Load the failback code into AAP (≈5 min)
 
@@ -536,7 +536,7 @@ oc --context=DR get events -n vmdr --sort-by=.metadata.creationTimestamp
 oc --context=PROD get events -n default --sort-by=.metadata.creationTimestamp
 ```
 
-Failback reference (stages, retries, limits): [FAILBACK-CONTINUATION.md](https://github.com/mpmprock3/openshift-vm-dr-automation/blob/f604d65/docs/FAILBACK-CONTINUATION.md).
+Failback reference (stages, retries, limits): [FAILBACK-CONTINUATION.md](https://github.com/mpmprock3/openshift-vm-dr-automation/blob/eb83b6d/docs/FAILBACK-CONTINUATION.md).
 
 ---
 

@@ -300,4 +300,4 @@ It lists a group when its relationship is **Promoted** (failed over) or a failba
 
 ---
 
-See also: [RUNBOOK.md](RUNBOOK.md) · [SURVEY-GUIDE-AND-TESTS.md](SURVEY-GUIDE-AND-TESTS.md) · [LAB-FAILBACK-EASY.md](https://github.com/mpmprock3/openshift-vm-dr-automation/blob/f604d65/docs/LAB-FAILBACK-EASY.md) · [FAILBACK-CONTINUATION.md](https://github.com/mpmprock3/openshift-vm-dr-automation/blob/f604d65/docs/FAILBACK-CONTINUATION.md)
+See also: [RUNBOOK.md](RUNBOOK.md) · [SURVEY-GUIDE-AND-TESTS.md](SURVEY-GUIDE-AND-TESTS.md) · [LAB-FAILBACK-EASY.md](https://github.com/mpmprock3/openshift-vm-dr-automation/blob/eb83b6d/docs/LAB-FAILBACK-EASY.md) · [FAILBACK-CONTINUATION.md](https://github.com/mpmprock3/openshift-vm-dr-automation/blob/eb83b6d/docs/FAILBACK-CONTINUATION.md)
