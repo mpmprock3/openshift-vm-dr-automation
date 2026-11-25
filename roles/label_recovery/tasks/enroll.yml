@@ -41,7 +41,10 @@
       {{ (lr_disk_names +
           (item.resources[0].spec.template.spec.volumes | selectattr('dataVolume', 'defined') | map(attribute='dataVolume.name') | list) +
           (item.resources[0].spec.template.spec.volumes | selectattr('persistentVolumeClaim', 'defined') | map(attribute='persistentVolumeClaim.claimName') | list)) | unique | list }}
-    lr_vm_identities: '{{ lr_vm_identities + [{"name": item.item, "uid": item.resources[0].metadata.uid}] }}'
+    lr_vm_identities: >-
+      {{ lr_vm_identities + [{"name": item.item, "uid": item.resources[0].metadata.uid,
+          "pvcs": ((item.resources[0].spec.template.spec.volumes | selectattr('dataVolume', 'defined') | map(attribute='dataVolume.name') | list) +
+                   (item.resources[0].spec.template.spec.volumes | selectattr('persistentVolumeClaim', 'defined') | map(attribute='persistentVolumeClaim.claimName') | list)) | unique | sort}] }}
   loop: '{{ lr_vms.results }}'
   no_log: true
 - name: Read selected PVCs
@@ -228,6 +231,10 @@
           app.kubernetes.io/component: label-recovery-plan
       data:
         plan.json: '{{ label_recovery_plan | to_json }}'
+- name: Prepare internal stage outputs
+  ansible.builtin.set_fact:
+    lr_outputs:
+      label_recovery_plan: '{{ label_recovery_plan }}'
 - name: Pass enrollment to destination job
   register: lr_stage_artifacts
   ansible.builtin.set_stats:
@@ -235,5 +242,6 @@
     aggregate: false
     data:
       label_recovery_plan: '{{ label_recovery_plan }}'
+  when: recovery_export_artifacts | default(true) | bool
 - ansible.builtin.debug:
     msg: 'Retained baseline verified. Source VM is still running. Destination replication is a separate step.'

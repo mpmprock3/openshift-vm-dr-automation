@@ -8,5 +8,5 @@
         name: vmdr
         tasks_from: credentials
     - ansible.builtin.include_role:
-        name: vmdr
-        tasks_from: fb_begin
+        name: failback_continuation
+        tasks_from: begin

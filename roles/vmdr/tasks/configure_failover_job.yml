@@ -11,7 +11,7 @@
       playbook: "{{ failover_job.playbook }}"
       allow_simultaneous: false
       timeout: 7200
-    desired_job_credentials: "{{ (base_templates[failover_job.base].credential_ids + (base_templates['Refresh VM Choices'].credential_ids | difference(base_templates['Configure DC Protection'].credential_ids))) | unique | list if failover_job.name == 'Refresh Recovery Choices' else base_templates[failover_job.base].credential_ids }}"
+    desired_job_credentials: "{{ (base_templates[failover_job.base].credential_ids + (base_templates['Refresh VM Choices'].credential_ids | difference(base_templates['Configure DC Protection'].credential_ids))) | unique | list if failover_job.name in ['Refresh Recovery Choices', 'Refresh Failback Groups'] else base_templates[failover_job.base].credential_ids }}"
 - name: Find job template by name
   ansible.builtin.include_tasks: survey_api.yml
   vars:

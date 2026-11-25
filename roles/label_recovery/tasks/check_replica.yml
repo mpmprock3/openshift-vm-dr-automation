@@ -61,6 +61,10 @@
 - name: Produce a deterministic retry identity from the actual mirror UID
   ansible.builtin.set_fact:
     label_cutover_plan: "{{ lr_plan | combine({'mirror_uid': lr_cutover_amr.resources[0].metadata.uid, 'final_name': 'final-' ~ lr_cutover_amr.resources[0].metadata.uid, 'checked_at': now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ')}) }}"
+- name: Prepare internal stage outputs
+  ansible.builtin.set_fact:
+    lr_outputs:
+      label_cutover_plan: '{{ label_cutover_plan }}'
 - name: Pass checked plan to source shutdown stage
   register: lr_stage_artifacts
   ansible.builtin.set_stats:
@@ -68,3 +72,4 @@
     aggregate: false
     data:
       label_cutover_plan: '{{ label_cutover_plan }}'
+  when: recovery_export_artifacts | default(true) | bool

@@ -64,6 +64,7 @@
       uid: '{{ lr_plan.mirror_uid }}'
       observed_replica: '{{ lr_disaster_mirror.resources[0].status.lastTransferredSnapshot }}'
       fencing: '{{ rp_artifacts.fencing }}'
+- ansible.builtin.include_tasks: capture_receipt_identity.yml
 - name: Persist verified disaster recovery receipt
   kubernetes.core.k8s:
     state: present
@@ -79,9 +80,15 @@
       data:
         plan.json: '{{ lr_plan | to_json }}'
         snapshot.json: '{{ label_final_snapshot | to_json }}'
+        recovered.json: '{{ lr_recovered_ids | to_json }}'
+- name: Prepare internal stage outputs
+  ansible.builtin.set_fact:
+    lr_outputs:
+      label_final_snapshot: '{{ label_final_snapshot }}'
 - register: lr_stage_artifacts
   ansible.builtin.set_stats:
     per_host: false
     aggregate: false
     data:
       label_final_snapshot: '{{ label_final_snapshot }}'
+  when: recovery_export_artifacts | default(true) | bool

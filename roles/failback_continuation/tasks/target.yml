@@ -1,0 +1,62 @@
+---
+- ansible.builtin.set_fact:
+    fc_verified_stopped_vms: []
+- name: Read any already-established replica on retry
+  kubernetes.core.k8s_info:
+    api_version: '{{ fc_api }}'
+    kind: AppMirrorRelationship
+    namespace: '{{ fc.destination_namespace }}'
+    name: '{{ fc.application }}-mirror'
+  register: fc_target_mirror
+- name: Validate retained target on subsequent cycles before controller reuse
+  when:
+    - fc.original.continuation_application is defined
+    - fc_target_mirror.resources | length == 0
+  block:
+    - kubernetes.core.k8s_info:
+        api_version: '{{ fc_api }}'
+        kind: Application
+        namespace: '{{ fc.destination_namespace }}'
+        name: '{{ fc.application }}'
+      register: fc_target_app
+    - ansible.builtin.assert:
+        that:
+          - fc_target_app.resources | length == 1
+          - fc_target_app.resources[0].metadata.uid == fc.original.application_uid
+          - fc_target_app.resources[0].spec.resourceFilter | default({}) == {}
+          - fc_target_app.resources[0].spec.includedClusterScopedResources | default([]) == []
+          - "fc_target_app.resources[0].spec.includedNamespaces == [{'namespace': fc.destination_namespace, 'labelSelector': {'matchLabels': {'vmdr.aap/protection-group': fc.application}}}]"
+    - name: Read target VMIs immediately before reverse establishment
+      kubernetes.core.k8s_info:
+        api_version: kubevirt.io/v1
+        kind: VirtualMachineInstance
+        namespace: '{{ fc.destination_namespace }}'
+      register: fc_target_vmis
+    - ansible.builtin.assert:
+        that: fc_target_vmis.resources | length == 0
+    - name: Read target definitions without exposing guest configuration
+      kubernetes.core.k8s_info:
+        api_version: kubevirt.io/v1
+        kind: VirtualMachine
+        namespace: '{{ fc.destination_namespace }}'
+      register: fc_target_vms
+      no_log: true
+    - name: Allow only enrolled stopped VM incarnations for controller-managed replacement
+      ansible.builtin.assert:
+        that:
+          - item.metadata.uid in (fc.original.selected_vms | map(attribute='uid') | list)
+          - item.spec.runStrategy | default('') == 'Halted' or item.spec.running | default(true) == false
+          - item.metadata.labels['vmdr.aap/protection-group'] | default('') == fc.application
+      loop: '{{ fc_target_vms.resources }}'
+      no_log: true
+    - ansible.builtin.set_fact:
+        fc_verified_stopped_vms: '{{ fc_target_vms.resources | map(attribute="metadata.uid") | list }}'
+    - kubernetes.core.k8s_info:
+        api_version: v1
+        kind: PersistentVolumeClaim
+        namespace: '{{ fc.destination_namespace }}'
+      register: fc_target_pvcs
+    - ansible.builtin.assert:
+        that:
+          - fc_target_pvcs.resources | map(attribute='metadata.uid') | sort == fc.original.continuation_pvc_uids | sort
+          - fc_target_pvcs.resources | map(attribute='metadata.name') | sort == fc.label_plan.pvcs | sort

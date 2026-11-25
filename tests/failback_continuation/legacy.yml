@@ -1,0 +1,18 @@
+---
+- hosts: localhost
+  connection: local
+  gather_facts: false
+  module_defaults:
+    kubernetes.core.k8s_info:
+      host: '{{ cluster_api }}'
+    kubernetes.core.k8s:
+      host: '{{ cluster_api }}'
+    kubernetes.core.k8s_json_patch:
+      host: '{{ cluster_api }}'
+  tasks:
+    - ansible.builtin.include_role:
+        name: vmdr
+        tasks_from: credentials
+    - ansible.builtin.include_role:
+        name: vmdr
+        tasks_from: '{{ test_stage }}'

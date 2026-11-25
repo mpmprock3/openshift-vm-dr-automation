@@ -1,0 +1,61 @@
+---
+- ansible.builtin.include_tasks: inputs.yml
+- ansible.builtin.assert:
+    that: cluster_api == fc.original.source_api
+- name: Promote only the completed final DR snapshot
+  ansible.builtin.include_role:
+    name: label_recovery
+    tasks_from: promote
+  vars:
+    recovery_export_artifacts: false
+    recovery_cluster_api: '{{ cluster_api }}'
+  when: not fc_recovered | bool
+- name: Verify the current recovered VM identities on receipt retries
+  when: fc_recovered | bool
+  block:
+    - kubernetes.core.k8s_info:
+        api_version: v1
+        kind: ConfigMap
+        namespace: '{{ fc.destination_namespace }}'
+        name: '{{ fc.application }}-recovery-plan'
+      register: fc_active_plan
+    - ansible.builtin.set_fact:
+        fc_current_plan: '{{ fc_active_plan.resources[0].data["plan.json"] | from_json }}'
+    - name: Check recovered VM readiness without starting any old copy
+      kubernetes.core.k8s_info:
+        api_version: kubevirt.io/v1
+        kind: VirtualMachine
+        namespace: '{{ fc.destination_namespace }}'
+        name: '{{ item.name }}'
+      loop: '{{ fc_current_plan.vms if fc_current_plan.source_api == cluster_api else fc.cutover.vms }}'
+      register: fc_ready_vm
+      failed_when: fc_ready_vm.resources | length != 1 or not fc_ready_vm.resources[0].status.ready | default(false) or (fc_current_plan.source_api == cluster_api and fc_ready_vm.resources[0].metadata.uid != item.uid)
+      no_log: true
+- name: Activate recovered PROD protection and prepare forward replication
+  ansible.builtin.include_role:
+    name: label_recovery
+    tasks_from: activate_protection
+  vars:
+    recovery_export_artifacts: false
+    recovery_cluster_api: '{{ cluster_api }}'
+- ansible.builtin.set_fact:
+    fc_protection: '{{ lr_outputs.label_reprotection_plan }}'
+- name: Check the optional PROD application endpoint
+  ansible.builtin.uri:
+    url: '{{ failback_health_url }}'
+    status_code: 200
+    method: GET
+    follow_redirects: none
+    use_netrc: false
+    validate_certs: true
+    timeout: 30
+  register: fc_health
+  until: fc_health.status | default(0) == 200
+  retries: 20
+  delay: 10
+  when: failback_health_url | default('') | length > 0
+- ansible.builtin.set_stats:
+    per_host: false
+    aggregate: false
+    data:
+      continuation_protection: '{{ fc_protection }}'

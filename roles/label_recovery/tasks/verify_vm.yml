@@ -14,7 +14,7 @@
       - >-
         ((lr_restored_vm.resources[0].spec.template.spec.volumes | selectattr('dataVolume', 'defined') | map(attribute='dataVolume.name') | list) +
          (lr_restored_vm.resources[0].spec.template.spec.volumes | selectattr('persistentVolumeClaim', 'defined') | map(attribute='persistentVolumeClaim.claimName') | list)) |
-        difference(lr_plan.pvcs) | length == 0
+        unique | sort == lr_member.pvcs | default(lr_plan.pvcs) | sort
 - name: Start restored VM if archived state was stopped
   kubernetes.core.k8s_json_patch:
     api_version: kubevirt.io/v1

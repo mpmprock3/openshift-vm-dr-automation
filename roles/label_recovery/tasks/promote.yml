@@ -58,6 +58,7 @@
   loop: '{{ lr_plan.vms }}'
   loop_control:
     loop_var: lr_member
+- ansible.builtin.include_tasks: capture_receipt_identity.yml
 - name: Persist cutover receipt
   kubernetes.core.k8s:
     state: present
@@ -73,5 +74,6 @@
       data:
         plan.json: '{{ lr_plan | to_json }}'
         snapshot.json: '{{ lr_snapshot | to_json }}'
+        recovered.json: '{{ lr_recovered_ids | to_json }}'
 - ansible.builtin.debug:
     msg: 'VM recovery verified from the final shutdown snapshot. Reprotect the new active site separately; the old source must remain stopped.'

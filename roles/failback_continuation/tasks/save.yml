@@ -1,0 +1,22 @@
+---
+- name: Save continuation checkpoint on DR
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: '{{ fc_record_name }}'
+        namespace: '{{ fc.original.mirror_namespace }}'
+        labels:
+          app.kubernetes.io/managed-by: '{{ fc_owner }}'
+          app.kubernetes.io/component: failback-continuation
+      data:
+        state.json: '{{ fc | to_json }}'
+- name: Export nonsecret continuation context to the next workflow stage
+  ansible.builtin.set_stats:
+    per_host: false
+    aggregate: false
+    data:
+      continuation_state: '{{ fc }}'
+      continuation_record_name: '{{ fc_record_name }}'

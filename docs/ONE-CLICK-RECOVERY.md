@@ -1,5 +1,7 @@
 # One-click NetApp/AAP recovery plans
 
+**Continuing from the existing `Fail Over to DR`? Use [Failback Continuation](FAILBACK-CONTINUATION.md).** This document describes the separate `VMDR -` runner and is not required for that continuation.
+
 **Live lab evidence and operator steps:** [test-vm AAP runbook](TEST-VM-AAP-RUNBOOK.md) records successful DR → DC job 35 on 21 November 2026 and restoration of DC → DR replication. Guest-data checks and the new runner's live forward/repeated cycles remain unverified. Use that runbook for the already configured lab; the setup below is for administrators onboarding plans.
 
 **For the requested DR → DC VM move, start with [the planned VM failback quick start](VM-FAILBACK-QUICKSTART.md).** It needs no external fencing adapter, application URL or third cluster. The additional disaster-recovery integration below is optional.

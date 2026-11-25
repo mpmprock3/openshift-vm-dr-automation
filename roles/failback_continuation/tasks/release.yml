@@ -1,0 +1,50 @@
+---
+- ansible.builtin.include_tasks: inputs.yml
+- ansible.builtin.assert:
+    that: cluster_api == fc.original.destination_api
+- kubernetes.core.k8s_info:
+    api_version: '{{ fc_api }}'
+    kind: AppMirrorRelationship
+    namespace: '{{ fc.original.mirror_namespace }}'
+    name: '{{ fc.original.mirror_name }}'
+  register: fc_release
+- name: Require the exact completed original promotion
+  ansible.builtin.assert:
+    that:
+      - fc_release.resources[0].metadata.uid == fc.original.mirror_uid
+      - fc_release.resources[0].spec.sourceApplicationUID == fc.original.application_uid
+      - fc_release.resources[0].spec.desiredState == 'Promoted'
+      - fc_release.resources[0].status.state == 'Promoted'
+  when:
+    - fc_release.resources | length > 0
+    - fc_release.resources[0].spec.desiredState != 'Established'
+- name: Release only the old promoted mirror with identity preconditions
+  kubernetes.core.k8s:
+    state: absent
+    api_version: '{{ fc_api }}'
+    kind: AppMirrorRelationship
+    namespace: '{{ fc.original.mirror_namespace }}'
+    name: '{{ fc.original.mirror_name }}'
+    delete_options:
+      preconditions:
+        uid: '{{ fc_release.resources[0].metadata.uid }}'
+        resourceVersion: '{{ fc_release.resources[0].metadata.resourceVersion }}'
+    wait: true
+    wait_timeout: 300
+  when:
+    - fc_release.resources | length > 0
+    - fc_release.resources[0].spec.desiredState != 'Established'
+- name: Inspect legacy DR schedules
+  kubernetes.core.k8s_info:
+    api_version: '{{ fc_api }}'
+    kind: Schedule
+    namespace: '{{ fc.original.mirror_namespace }}'
+  register: fc_schedules
+- name: Retire old managed DR protection schedules when migrating the application
+  ansible.builtin.include_role:
+    name: vmdr
+    tasks_from: reverse_remove_schedule
+  loop: "{{ fc_schedules.resources | selectattr('spec.applicationRef', 'equalto', fc.legacy_dr_application) | list }}"
+  loop_control:
+    loop_var: reverse_schedule
+  when: fc.legacy_dr_application != fc.application

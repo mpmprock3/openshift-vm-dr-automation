@@ -1,0 +1,35 @@
+---
+- ansible.builtin.include_tasks: inputs.yml
+- ansible.builtin.assert:
+    that:
+      - cluster_api == fc.original.destination_api
+      - label_cutover_plan.application == fc.application
+      - label_cutover_plan.source_api == cluster_api
+      - label_cutover_plan.destination_namespace == fc.destination_namespace
+- name: Save target identity before any source shutdown
+  ansible.builtin.set_fact:
+    fc: "{{ fc | combine({'cutover': label_cutover_plan}) }}"
+- ansible.builtin.include_tasks: save.yml
+- name: Capture or recheck the exact final DR recovery point
+  ansible.builtin.include_role:
+    name: label_recovery
+    tasks_from: shutdown
+  vars:
+    recovery_export_artifacts: false
+    recovery_cluster_api: '{{ cluster_api }}'
+  when: not fc_recovered | bool
+- name: Never replace a previously recorded final recovery point on retry
+  ansible.builtin.assert:
+    that:
+      - fc.snapshot is not defined or fc.snapshot.uid == lr_outputs.label_final_snapshot.uid
+      - fc.snapshot is not defined or fc.snapshot.archive == lr_outputs.label_final_snapshot.archive
+    fail_msg: The recorded final snapshot was replaced or its archive changed. Refuse promotion; do not recreate recovery evidence.
+  when: not fc_recovered | bool
+- ansible.builtin.set_fact:
+    fc: "{{ fc | combine({'phase': 'isolated', 'snapshot': lr_outputs.label_final_snapshot if not fc_recovered | bool else label_final_snapshot}) }}"
+- ansible.builtin.include_tasks: save.yml
+- ansible.builtin.set_stats:
+    per_host: false
+    aggregate: false
+    data:
+      continuation_snapshot: '{{ fc.snapshot }}'

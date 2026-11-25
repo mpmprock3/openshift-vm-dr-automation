@@ -1,0 +1,60 @@
+---
+- ansible.builtin.include_tasks: inputs.yml
+- ansible.builtin.assert:
+    that: cluster_api == fc.original.source_api
+- ansible.builtin.set_fact:
+    fc_recovered: false
+    fc_receipt:
+      resources: []
+- name: Find the exact operation receipt on retries
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ConfigMap
+    namespace: '{{ fc.destination_namespace }}'
+    name: '{{ fc.cutover.final_name }}-receipt'
+  register: fc_receipt
+  when: fc.cutover is defined
+- name: Recover saved artifacts after promotion even if its AMR was already released
+  when: fc_receipt.resources | default([]) | length == 1
+  block:
+    - ansible.builtin.assert:
+        that:
+          - fc_receipt.resources[0].metadata.labels['app.kubernetes.io/managed-by'] | default('') == fc_owner
+          - (fc_receipt.resources[0].data['plan.json'] | from_json).mirror_uid == fc.cutover.mirror_uid
+          - (fc_receipt.resources[0].data['snapshot.json'] | from_json).uid == fc.snapshot.uid
+    - ansible.builtin.set_fact:
+        fc_recovered: true
+        label_cutover_plan: '{{ fc.cutover }}'
+        label_final_snapshot: '{{ fc.snapshot }}'
+- name: Establish reverse replication and check compute before DR shutdown
+  when: not fc_recovered
+  block:
+    - ansible.builtin.include_tasks: target.yml
+    - ansible.builtin.include_role:
+        name: label_recovery
+        tasks_from: establish
+      vars:
+        recovery_export_artifacts: false
+        recovery_cluster_api: '{{ cluster_api }}'
+        replica_plan_input: '{{ fc.label_plan }}'
+        lr_resume_guard_passed: '{{ fc.original.continuation_application is defined }}'
+        lr_verified_stopped_vms: '{{ fc_verified_stopped_vms }}'
+    - ansible.builtin.include_role:
+        name: label_recovery
+        tasks_from: check_cutover
+      vars:
+        recovery_export_artifacts: false
+        recovery_cluster_api: '{{ cluster_api }}'
+        label_recovery_target: '{{ fc.destination_namespace }}/{{ fc.application }}'
+        recovery_allow_emulation: '{{ protect_allow_emulation }}'
+    - ansible.builtin.assert:
+        that:
+          - not label_cutover_recovered | default(false)
+          - fc.cutover is not defined or label_cutover_plan.mirror_uid == fc.cutover.mirror_uid
+- ansible.builtin.set_stats:
+    per_host: false
+    aggregate: false
+    data:
+      continuation_recovered: '{{ fc_recovered }}'
+      continuation_cutover: '{{ label_cutover_plan }}'
+      continuation_snapshot: '{{ label_final_snapshot | default({}) }}'

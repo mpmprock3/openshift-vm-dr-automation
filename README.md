@@ -1,12 +1,8 @@
 # OpenShift VM disaster recovery automation
 
-**Current test-vm lab (21 November 2026): [AAP operator runbook and successful failback record](docs/TEST-VM-AAP-RUNBOOK.md).** The VM is now active on DC in `vm-dc-recovered`, with replication to DR `vmdr`. Use **VMDR - Switch to DR** and **VMDR - Fail Back to DC**, selecting plan **test-vm**. The runbook records the exact setup, one-time legacy migration, successful job 35, repeatable launch steps and remaining guest-data/forward-cycle tests. Keep the retained old `my-vm/test-vm` stopped.
+**Continue from your existing Fail Over to DR:** use [Fail Back to DC — setup and operator guide](docs/FAILBACK-CONTINUATION.md). The survey selects the existing protected group. Ansible handles first-time enrollment internally, returns to a dedicated PROD namespace while retaining the old stopped copy, and updates the existing failover catalog for repeat cycles. No new multi-cluster credential or separate operator workflow is needed. This implementation requires live qualification before customer use.
 
-**New opt-in one-click recovery plans:** start with [planned DR-to-DC VM failback](docs/VM-FAILBACK-QUICKSTART.md), or see [full setup and testing](docs/ONE-CLICK-RECOVERY.md). The new NetApp/AAP runner adds shared locking, durable resume, planned failback, verified-fencing disaster recovery and health checks for single-VM label-based plans. Existing legacy failover is unchanged; do not mix the two operating paths for the same VM. Live qualification is required.
-
-**Historical POC:** [the three-workflow operating guide](docs/CLEAN-POC.md) describes the 20 November environment, not the current `test-vm` operating path. The legacy sections below remain reference material for unmigrated plans; do not use them for the migrated `test-vm`.
-
-**Failback incident recovery:** use the [label-based recovery guide](docs/LABEL-RECOVERY.md) for the new dedicated-namespace path. The legacy failback workflow's site-specific PV/pod filters failed live Application reuse checks. Do not copy a DR filter onto a DC Application to bypass that check.
+The [older VMDR recovery runner](docs/VM-FAILBACK-QUICKSTART.md) and [21 November lab record](docs/TEST-VM-AAP-RUNBOOK.md) describe a different operating path and historical environment, not the setup for this continuation. Do not mix the two paths for one VM.
 
 **New or recreated clusters? Start with the [step-by-step rebuild guide](docs/REBUILD.md).** It covers prerequisites, optional ACM, AAP installation, credentials, all initial templates and surveys, replication, failover, acceptance tests and troubleshooting. The [bootstrap manifests](bootstrap/) contain the non-secret starting resources.
 

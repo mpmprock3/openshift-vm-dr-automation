@@ -153,6 +153,14 @@
   register: lr_definitions
   failed_when: lr_definitions.resources | length > 0 and not (lr_definitions.resources[0].spec.runStrategy | default('') == 'Halted' or lr_definitions.resources[0].spec.running | default(true) == false)
   no_log: true
+- name: Prepare internal stage outputs
+  ansible.builtin.set_fact:
+    lr_outputs:
+      label_final_snapshot:
+        mirror_uid: '{{ lr_plan.mirror_uid }}'
+        uid: '{{ lr_ready.resources[0].metadata.uid }}'
+        archive: '{{ lr_ready.resources[0].status.appArchivePath }}'
+        checked_at: "{{ now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') }}"
 - name: Pass exact recovery point to promotion stage
   register: lr_stage_artifacts
   ansible.builtin.set_stats:
@@ -164,3 +172,4 @@
         uid: '{{ lr_ready.resources[0].metadata.uid }}'
         archive: '{{ lr_ready.resources[0].status.appArchivePath }}'
         checked_at: "{{ now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') }}"
+  when: recovery_export_artifacts | default(true) | bool
