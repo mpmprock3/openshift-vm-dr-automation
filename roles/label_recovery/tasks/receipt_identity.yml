@@ -1,19 +1,30 @@
 ---
-- kubernetes.core.k8s_info:
-    api_version: kubevirt.io/v1
-    kind: VirtualMachine
-    namespace: '{{ lr_old_plan.destination_namespace }}'
-    label_selectors:
-      - '{{ lr_old_plan.label_key }}={{ lr_old_plan.application }}'
-  register: lr_receipt_current_vms
+- name: Read namespace scope
+  ansible.builtin.include_tasks: scope_read.yml
+  vars:
+    scope_plan: '{{ lr_old_plan }}'
+    scope_side: destination
+    scope_queries:
+      - api_version: kubevirt.io/v1
+        kind: VirtualMachine
+        label_selectors:
+          - '{{ lr_old_plan.label_key }}={{ lr_old_plan.application }}'
+- ansible.builtin.set_fact:
+    lr_receipt_current_vms: '{{ lr_scope_result }}'
   no_log: true
-- kubernetes.core.k8s_info:
-    api_version: v1
-    kind: PersistentVolumeClaim
-    namespace: '{{ lr_old_plan.destination_namespace }}'
-    label_selectors:
-      - '{{ lr_old_plan.label_key }}={{ lr_old_plan.application }}'
-  register: lr_receipt_current_pvcs
+- name: Read namespace scope
+  ansible.builtin.include_tasks: scope_read.yml
+  vars:
+    scope_plan: '{{ lr_old_plan }}'
+    scope_side: destination
+    scope_queries:
+      - api_version: v1
+        kind: PersistentVolumeClaim
+        label_selectors:
+          - '{{ lr_old_plan.label_key }}={{ lr_old_plan.application }}'
+- ansible.builtin.set_fact:
+    lr_receipt_current_pvcs: '{{ lr_scope_result }}'
+  no_log: true
 - ansible.builtin.assert:
     that:
       - lr_receipt_current_vms.resources | map(attribute='metadata.uid') | sort == (lr_receipt.resources[0].data['recovered.json'] | from_json).vm_uids

@@ -13,13 +13,13 @@
     api_version: v1
     kind: ConfigMap
     namespace: '{{ recovery_target.split("/")[0] }}'
-    name: "reverse-{{ (recovery_target | hash('sha256'))[:24] }}"
+    name: reverse-{{ (recovery_target | hash('sha256'))[:24] }}
   register: fc_legacy_reverse
 - ansible.builtin.assert:
     that: fc_legacy_reverse.resources | length == 0
     fail_msg: An old reverse-operation record exists. Reconcile it before starting the continuation; do not delete it to bypass this guard.
 - ansible.builtin.set_fact:
-    fc_record_name: "continue-{{ (recovery_target | hash('sha256'))[:24] }}"
+    fc_record_name: continue-{{ (recovery_target | hash('sha256'))[:24] }}
 - kubernetes.core.k8s_info:
     api_version: v1
     kind: ConfigMap
@@ -66,7 +66,8 @@
           data:
             state.json: '{{ fc | to_json }}'
     - ansible.builtin.set_fact:
-        fc_saved: {resources: []}
+        fc_saved:
+          resources: []
 - name: Start directly from the existing Fail Over to DR catalog
   when: fc_saved.resources | length == 0
   block:
@@ -75,42 +76,24 @@
         tasks_from: assess_failback_dr
     - name: Preserve the enrolled minutely replication interval
       ansible.builtin.set_fact:
-        fc_intervals: "{{ failback_amr_query.resources[0].spec.recurrenceRule | regex_findall('RRULE:FREQ=MINUTELY;INTERVAL=([0-9]+)') }}"
+        fc_intervals: '{{ failback_amr_query.resources[0].spec.recurrenceRule | regex_findall(''RRULE:FREQ=MINUTELY;INTERVAL=([0-9]+)'') }}'
     - ansible.builtin.assert:
         that:
           - fc_intervals | length == 1
           - fc_intervals[0] | int >= 5
           - fc_intervals[0] | int <= 1440
         fail_msg: The existing recurrence rule is outside this workflow's supported minutely schedule. No recovery mutation was performed.
-    - name: Require one dedicated DR namespace and supported disk layout
+    - name: Require supported disk layout across all enrolled namespaces
       ansible.builtin.assert:
         that:
-          - failback_plan.namespace_mapping | length == 1
-          - failback_plan.selected_vms | map(attribute='destination_namespace') | unique | list == [failback_plan.mirror_namespace]
           - failback_plan.selected_vms | map(attribute='disks') | flatten | map(attribute='storage_class') | unique | length == 1
           - failback_amr_query.resources[0].spec.sourceAppVaultRef == failback_amr_query.resources[0].spec.destinationAppVaultRef
-        fail_msg: This continuation supports one namespace per group, one storage class, and the same AppVault name at both sites. No resources have been changed.
-    - name: Require a dedicated DR workload namespace before automatic adoption
-      kubernetes.core.k8s_info:
-        api_version: '{{ item.api }}'
-        kind: '{{ item.kind }}'
-        namespace: '{{ failback_plan.mirror_namespace }}'
-      loop:
-        - {api: kubevirt.io/v1, kind: VirtualMachine}
-        - {api: v1, kind: PersistentVolumeClaim}
-        - {api: apps/v1, kind: Deployment}
-        - {api: apps/v1, kind: StatefulSet}
-        - {api: apps/v1, kind: DaemonSet}
-        - {api: batch/v1, kind: Job}
-      register: fc_namespace_members
-      no_log: true
-    - name: Refuse unrelated namespace workloads before changing protection
-      ansible.builtin.assert:
-        that:
-          - fc_namespace_members.results[0].resources | map(attribute='metadata.name') | sort == failback_plan.selected_vms | map(attribute='vm') | map('basename') | sort
-          - fc_namespace_members.results[1].resources | map(attribute='metadata.name') | sort == failback_plan.selected_vms | map(attribute='disks') | flatten | map(attribute='pvc') | unique | sort
-          - fc_namespace_members.results[2:] | map(attribute='resources') | flatten | length == 0
-        fail_msg: Automatic continuation requires a dedicated DR VM namespace with exactly the enrolled VMs and disks. Split unrelated workloads into separate protection namespaces first.
+        fail_msg: Failback requires one storage class and the same AppVault name at both sites.
+    - name: Validate every dedicated DR workload namespace before adoption
+      ansible.builtin.include_tasks: dedicated_namespace.yml
+      loop: '{{ failback_plan.namespace_mapping.values() | list | union([failback_plan.mirror_namespace]) | sort }}'
+      loop_control:
+        loop_var: fc_scope_namespace
     - ansible.builtin.set_fact:
         fc:
           target: '{{ recovery_target }}'
@@ -118,11 +101,15 @@
           original_amr: '{{ failback_amr_query.resources[0] }}'
           legacy_dr_application: '{{ failback_dr_application_name }}'
           legacy_dr_application_uid: '{{ failback_application.resources[0].metadata.uid }}'
-          application: "{{ failback_plan.continuation_application | default('fb-app-' ~ (recovery_target | hash('sha256'))[:16]) }}"
-          destination_namespace: "{{ failback_plan.application_namespace if failback_plan.continuation_application is defined else 'prod-return-' ~ (failback_plan.mirror_uid | hash('sha256'))[:16] }}"
+          application: '{{ failback_plan.continuation_application | default(''fb-app-'' ~ (recovery_target | hash(''sha256''))[:16]) }}'
+          destination_namespace: '{{ (failback_plan | fc_return_mapping)[failback_plan.mirror_namespace] }}'
           interval_minutes: '{{ fc_intervals[0] | int }}'
           phase: discovered
+          namespace_mapping: '{{ failback_plan | fc_return_mapping }}'
     - ansible.builtin.include_tasks: save.yml
+- name: Normalize namespace mapping for existing single-namespace retries
+  ansible.builtin.set_fact:
+    fc: '{{ fc | combine({''namespace_mapping'': fc.namespace_mapping | default({fc.original.mirror_namespace: fc.destination_namespace})}) }}'
 - name: Enroll the running DR group automatically before releasing its old mirror
   when: fc.phase == 'discovered'
   block:
@@ -141,8 +128,10 @@
         recovery_storage_class: '{{ fc.original.selected_vms[0].disks[0].storage_class }}'
         recovery_baseline_seed: '{{ fc.original.mirror_uid }}'
         recovery_interval_minutes: '{{ fc.interval_minutes }}'
+        recovery_namespace_mapping: '{{ fc.namespace_mapping }}'
+        recovery_vm_refs: '{{ fc.original.selected_vms | fc_dr_members }}'
     - ansible.builtin.set_fact:
-        fc: "{{ fc | combine({'phase': 'enrolled', 'label_plan': label_recovery_plan}) }}"
+        fc: '{{ fc | combine({''phase'': ''enrolled'', ''label_plan'': label_recovery_plan}) }}'
     - ansible.builtin.include_tasks: save.yml
 - name: Reject a later failover or foreign relationship on retry
   kubernetes.core.k8s_info:
@@ -153,7 +142,7 @@
   register: fc_old_mirror
 - ansible.builtin.assert:
     that:
-      - >-
+      - |-
         (fc_old_mirror.resources[0].metadata.uid == fc.original.mirror_uid and
          fc_old_mirror.resources[0].spec.desiredState == 'Promoted' and
          fc_old_mirror.resources[0].status.state == 'Promoted') or
@@ -179,4 +168,6 @@
   when: fc.phase == 'complete' and fc.original.mirror_name != fc.application ~ '-mirror'
 - ansible.builtin.include_tasks: save.yml
 - ansible.builtin.debug:
-    msg: 'Failback target is PROD {{ fc.destination_namespace }}. The old stopped PROD VM and disk are retained. No manual enrollment job is required.'
+    msg:
+      namespace_mapping_dr_to_prod: '{{ fc.namespace_mapping }}'
+      note: Original stopped PROD VMs and disks are retained. No manual enrollment is required.

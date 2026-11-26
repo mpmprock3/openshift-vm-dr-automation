@@ -7,7 +7,7 @@
       - label_reprotection_plan.source_namespace == fc.destination_namespace
       - label_reprotection_plan.application == fc.application
 - ansible.builtin.set_fact:
-    fc: "{{ fc | combine({'protection': label_reprotection_plan}) }}"
+    fc: '{{ fc | combine({''protection'': label_reprotection_plan}) }}'
 - ansible.builtin.include_tasks: save.yml
 - name: Restore PROD-to-DR replication with the stable Application scope
   ansible.builtin.include_role:
@@ -18,13 +18,14 @@
     recovery_cluster_api: '{{ cluster_api }}'
 - name: Build current VM membership for the existing Fail Over to DR workflow
   ansible.builtin.set_fact:
-    fc_members: []
-- ansible.builtin.set_fact:
-    fc_members: "{{ fc_members + [item | combine({'vm': fc.destination_namespace ~ '/' ~ item.vm.split('/')[-1], 'uid': (fc.protection.vms | selectattr('name', 'equalto', item.vm.split('/')[-1]) | first).uid})] }}"
-  loop: '{{ fc.original.selected_vms }}'
+    fc_members: '{{ fc | fc_members }}'
 - ansible.builtin.set_fact:
     fc_forward_uid: '{{ lr_ready.resources[0].metadata.uid }}'
-    fc_next_catalog: "{{ fc.original | combine({'application_namespace': fc.destination_namespace, 'application_name': fc.application, 'application_uid': fc.protection.application_uid, 'mirror_name': fc.application ~ '-mirror', 'mirror_uid': lr_ready.resources[0].metadata.uid, 'selected_vms': fc_members, 'namespace_mapping': {fc.destination_namespace: fc.original.mirror_namespace}, 'schedule': fc.application ~ '-schedule', 'continuation_application': fc.application, 'continuation_pvc_uids': fc.protection.pvc_uids, 'continuation_record': fc_record_name}) }}"
+    fc_next_catalog: '{{ fc.original | combine({''application_namespace'': fc.destination_namespace, ''application_name'': fc.application, ''application_uid'':
+      fc.protection.application_uid, ''mirror_name'': fc.application ~ ''-mirror'', ''mirror_uid'': lr_ready.resources[0].metadata.uid, ''selected_vms'':
+      fc_members, ''namespace_mapping'': dict(fc.namespace_mapping.values() | zip(fc.namespace_mapping.keys())), ''schedule'': fc.application
+      ~ ''-schedule'', ''continuation_application'': fc.application, ''continuation_pvc_uids'': fc.protection.pvc_uids, ''continuation_record'':
+      fc_record_name}) }}'
 - name: Read the next failover catalog before publishing
   kubernetes.core.k8s_info:
     api_version: v1
@@ -65,11 +66,12 @@
           app.kubernetes.io/component: retired-recovery-plan
   when: fc.original.mirror_name != fc.application ~ '-mirror'
 - ansible.builtin.set_fact:
-    fc: "{{ fc | combine({'phase': 'complete', 'forward_uid': fc_forward_uid, 'next_catalog': fc_next_catalog}) }}"
+    fc: '{{ fc | combine({''phase'': ''complete'', ''forward_uid'': fc_forward_uid, ''next_catalog'': fc_next_catalog}) }}'
 - ansible.builtin.include_tasks: save.yml
 - ansible.builtin.debug:
     msg:
-      result: 'Failback complete. PROD VM ready; PROD-to-DR replication Established with a successful transfer.'
+      result: Failback complete. PROD VM ready; PROD-to-DR replication Established with a successful transfer.
       prod_namespace: '{{ fc.destination_namespace }}'
-      next: 'Refresh Recovery Choices, then use the existing Fail Over to DR with the updated group. No manual re-enrollment is required.'
-      verification: 'Verify DR-written data and application access inside the recovered guest. VM readiness is not proof of zero data loss.'
+      next: Refresh Recovery Choices, then use the existing Fail Over to DR with the updated group. No manual re-enrollment is required.
+      verification: Verify DR-written data and application access inside the recovered guest. VM readiness is not proof of zero data loss.
+      namespace_mapping_dr_to_prod: '{{ fc.namespace_mapping }}'

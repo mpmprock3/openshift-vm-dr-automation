@@ -12,12 +12,12 @@ def write(db): state.write_text(json.dumps(db))
 def read(): return json.loads(state.read_text())
 def find(db, site, kind, name): return next(x for x in db[site] if x['kind']==kind and x['metadata']['name']==name)
 def run(label, stage, site, passed=None, ok=True, target='my-vm/legacy-mirror', legacy=False):
-    env = dict(os.environ, VMDR_PLAN_TEST_STATE=str(state), ANSIBLE_ROLES_PATH=str(ROOT/'roles'),
+    env = dict(os.environ, VMDR_PLAN_TEST_STATE=str(state), ANSIBLE_ROLES_PATH=str(ROOT/'roles'), ANSIBLE_FILTER_PLUGINS=str(ROOT/'filter_plugins'),
                ANSIBLE_COLLECTIONS_PATH=str(ROOT/'tests/failback_continuation/collections'),
                ANSIBLE_LOCAL_TEMP=str(OUT/'local'), ANSIBLE_REMOTE_TEMP=str(OUT/'remote'),
                ANSIBLE_PIPELINING='true', ANSIBLE_CALLBACK_PLUGINS=str(ROOT/'tests/failback_continuation/callback_plugins'), ANSIBLE_CALLBACKS_ENABLED='vmdr_artifacts', VMDR_TEST_ARTIFACTS=str(artifacts), K8S_AUTH_HOST='https://'+site, K8S_AUTH_API_KEY='test-only')
     variables = dict(passed or {})
-    variables.update(ansible_python_interpreter=sys.executable, test_stage=stage, test_artifacts_path=str(artifacts),
+    variables.update(cluster_api='https://'+site, ansible_python_interpreter=sys.executable, test_stage=stage, test_artifacts_path=str(artifacts),
                      recovery_target=target, failback_destination_policy='Dedicated PROD namespace (retain old copy)',
                      recovery_poll_seconds=0, recovery_poll_retries=1, failover_request_id=variables.get('failover_request_id','test-forward-2'), accept_replica_data_loss='Yes', source_isolation_mode='Stop source VMs')
     artifacts.write_text('{}')
@@ -38,7 +38,7 @@ def cycle(prefix, target='my-vm/legacy-mirror'):
         passed=run(prefix+'-'+stage,stage,site,passed,target=target)
     return passed
 
-def main():
+def seed_state():
     seed={'dc':[], 'dr':[], 'control':[]}
     for site in ['dc','dr']:
         sc=obj('StorageClass','storage-class-iscsi');sc['provisioner']='csi.trident.netapp.io'
@@ -60,12 +60,16 @@ def main():
     amr=obj('AppMirrorRelationship','legacy-mirror','my-vm',{'desiredState':'Promoted','sourceApplicationUID':plan['application_uid'],'sourceApplicationName':'legacy','sourceAppVaultRef':'lab-vault','destinationAppVaultRef':'lab-vault','recurrenceRule':'DTSTART:20260101T000000Z\nRRULE:FREQ=MINUTELY;INTERVAL=10'}, {'state':'Promoted','destinationApplicationRef':'legacy'})
     amr['metadata']['uid']=plan['mirror_uid'];seed['dr'].append(amr)
     cm=obj('ConfigMap','legacy-mirror-plan','my-vm',labels={**owner,'app.kubernetes.io/component':'recovery-plan'});cm['data']={'plan.json':json.dumps(plan)};seed['dr'].append(cm)
+    return seed
+
+def main():
+    seed=seed_state()
     write(seed)
     passed=cycle('first')
     completed=read()
     assert find(completed,'dc','VirtualMachine','test-vm')==find(seed,'dc','VirtualMachine','test-vm'), 'Original stopped VM changed'
     assert find(completed,'dc','PersistentVolumeClaim','test-vm')==find(seed,'dc','PersistentVolumeClaim','test-vm'), 'Original disk changed'
-    assert passed['continuation_state']['label_plan']['interval_minutes']==10
+    assert int(passed['continuation_state']['label_plan']['interval_minutes'])==10
     assert completed['promotions']==1 and completed['shutdowns']==1
     cycle('completed-retry')
     assert read()['promotions']==1 and read()['shutdowns']==1

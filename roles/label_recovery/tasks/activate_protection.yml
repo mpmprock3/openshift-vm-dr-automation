@@ -29,7 +29,7 @@
     that:
       - lr_release.resources[0].metadata.uid == lr_old_plan.mirror_uid
       - lr_release.resources[0].status.state == 'Promoted'
-      - >-
+      - |-
         (label_final_snapshot.mode | default('planned') == 'planned' and
          lr_release.resources[0].spec.promotedSnapshot | default('') == label_final_snapshot.archive.split('/')[-1]) or
         (label_final_snapshot.mode | default('planned') == 'disaster' and
@@ -47,7 +47,7 @@
     that:
       - lr_active_app.resources | length == 1
       - lr_active_app.resources[0].spec.resourceFilter | default({}) == {}
-      - "lr_active_app.resources[0].spec.includedNamespaces == [{'namespace': lr_old_plan.destination_namespace, 'labelSelector': {'matchLabels': {lr_old_plan.label_key: lr_old_plan.application}}}]"
+      - lr_active_app.resources[0].spec.includedNamespaces | sort(attribute='namespace') == (lr_old_plan | lr_app_scope('destination'))
 - name: Release completed relationship without deleting the Application
   kubernetes.core.k8s:
     state: absent
@@ -85,15 +85,19 @@
     recovery_storage_class: '{{ lr_old_plan.storage_class }}'
     recovery_interval_minutes: '{{ lr_old_plan.interval_minutes }}'
     recovery_baseline_seed: '{{ lr_old_plan.mirror_uid }}'
+    recovery_namespace_mapping: '{{ dict((lr_old_plan | lr_mapping).values() | zip((lr_old_plan | lr_mapping).keys())) }}'
+    recovery_vm_refs: '{{ lr_old_plan | lr_destination_vms }}'
 - name: Prepare internal stage outputs
   ansible.builtin.set_fact:
     lr_outputs:
-      label_reprotection_plan: "{{ label_recovery_plan | combine({'retired_application_uid': lr_old_plan.application_uid, 'retired_pvc_uids': lr_old_plan.pvc_uids}) }}"
+      label_reprotection_plan: '{{ label_recovery_plan | combine({''retired_application_uid'': lr_old_plan.application_uid, ''retired_pvc_uids'':
+        lr_old_plan.pvc_uids}) }}'
 - name: Pass exact stopped destination identities to reprotection
   register: lr_stage_artifacts
   ansible.builtin.set_stats:
     per_host: false
     aggregate: false
     data:
-      label_reprotection_plan: "{{ label_recovery_plan | combine({'retired_application_uid': lr_old_plan.application_uid, 'retired_pvc_uids': lr_old_plan.pvc_uids}) }}"
+      label_reprotection_plan: '{{ label_recovery_plan | combine({''retired_application_uid'': lr_old_plan.application_uid, ''retired_pvc_uids'':
+        lr_old_plan.pvc_uids}) }}'
   when: recovery_export_artifacts | default(true) | bool

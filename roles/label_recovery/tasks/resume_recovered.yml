@@ -11,7 +11,7 @@
     namespace: '{{ lr_plan.source_namespace }}'
     label_selectors:
       - app.kubernetes.io/component=label-recovery-receipt
-      - 'app.kubernetes.io/managed-by={{ recovery_owner }}'
+      - app.kubernetes.io/managed-by={{ recovery_owner }}
   register: lr_receipts
 - ansible.builtin.set_fact:
     lr_matching_receipts: []
@@ -35,20 +35,26 @@
   kubernetes.core.k8s_info:
     api_version: kubevirt.io/v1
     kind: VirtualMachine
-    namespace: '{{ lr_plan.source_namespace }}'
+    namespace: '{{ lr_plan | lr_vm_ns(item, ''source'') }}'
     name: '{{ item.name }}'
   loop: '{{ lr_plan.vms }}'
   register: lr_resume_vm
-  failed_when: lr_resume_vm.resources | length != 1 or lr_resume_vm.resources[0].metadata.uid != item.uid or not (lr_resume_vm.resources[0].status.ready | default(false))
+  failed_when: lr_resume_vm.resources | length != 1 or lr_resume_vm.resources[0].metadata.uid != item.uid or not (lr_resume_vm.resources[0].status.ready
+    | default(false))
   no_log: true
 - name: Verify current active disk identities
-  kubernetes.core.k8s_info:
-    api_version: v1
-    kind: PersistentVolumeClaim
-    namespace: '{{ lr_plan.source_namespace }}'
-    label_selectors:
-      - '{{ lr_plan.label_key }}={{ lr_plan.application }}'
-  register: lr_resume_disks
+  ansible.builtin.include_tasks: scope_read.yml
+  vars:
+    scope_plan: '{{ lr_plan }}'
+    scope_side: source
+    scope_queries:
+      - api_version: v1
+        kind: PersistentVolumeClaim
+        label_selectors:
+          - '{{ lr_plan.label_key }}={{ lr_plan.application }}'
+- ansible.builtin.set_fact:
+    lr_resume_disks: '{{ lr_scope_result }}'
+  no_log: true
 - ansible.builtin.assert:
     that:
       - lr_resume_disks.resources | map(attribute='metadata.uid') | sort == lr_plan.pvc_uids | sort
@@ -59,7 +65,8 @@
       label_cutover_recovered: true
       label_cutover_plan: '{{ lr_resume_receipt.data["plan.json"] | from_json }}'
       label_final_snapshot: '{{ lr_resume_receipt.data["snapshot.json"] | from_json }}'
-      label_reprotection_plan: "{{ lr_plan | combine({'retired_application_uid': (lr_resume_receipt.data['plan.json'] | from_json).application_uid, 'retired_pvc_uids': (lr_resume_receipt.data['plan.json'] | from_json).pvc_uids}) }}"
+      label_reprotection_plan: '{{ lr_plan | combine({''retired_application_uid'': (lr_resume_receipt.data[''plan.json''] | from_json).application_uid,
+        ''retired_pvc_uids'': (lr_resume_receipt.data[''plan.json''] | from_json).pvc_uids}) }}'
 - name: Resume only reprotection without shutting down or promoting again
   register: lr_stage_artifacts
   ansible.builtin.set_stats:
@@ -69,7 +76,9 @@
       label_cutover_recovered: true
       label_cutover_plan: '{{ lr_resume_receipt.data["plan.json"] | from_json }}'
       label_final_snapshot: '{{ lr_resume_receipt.data["snapshot.json"] | from_json }}'
-      label_reprotection_plan: "{{ lr_plan | combine({'retired_application_uid': (lr_resume_receipt.data['plan.json'] | from_json).application_uid, 'retired_pvc_uids': (lr_resume_receipt.data['plan.json'] | from_json).pvc_uids}) }}"
+      label_reprotection_plan: '{{ lr_plan | combine({''retired_application_uid'': (lr_resume_receipt.data[''plan.json''] | from_json).application_uid,
+        ''retired_pvc_uids'': (lr_resume_receipt.data[''plan.json''] | from_json).pvc_uids}) }}'
   when: recovery_export_artifacts | default(true) | bool
 - ansible.builtin.debug:
-    msg: 'This group is already active here and its VM/PVC identities match the recovery catalog. Shutdown and promotion will be skipped; DR protection will be checked or completed.'
+    msg: This group is already active here and its VM/PVC identities match the recovery catalog. Shutdown and promotion will be skipped; DR protection
+      will be checked or completed.

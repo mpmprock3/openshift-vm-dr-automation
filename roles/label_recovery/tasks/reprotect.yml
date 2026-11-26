@@ -18,22 +18,34 @@
       - lr_retired_app.resources[0].metadata.uid == lr_reprotect_plan.retired_application_uid
       - lr_retired_app.resources[0].spec.resourceFilter | default({}) == {}
       - lr_retired_app.resources[0].spec.includedClusterScopedResources | default([]) == []
-      - "lr_retired_app.resources[0].spec.includedNamespaces == [{'namespace': lr_reprotect_plan.destination_namespace, 'labelSelector': {'matchLabels': {lr_reprotect_plan.label_key: lr_reprotect_plan.application}}}]"
+      - lr_retired_app.resources[0].spec.includedNamespaces | sort(attribute='namespace') == (lr_reprotect_plan | lr_app_scope('destination'))
 - name: Require that no destination VM or VMI can run
-  kubernetes.core.k8s_info:
-    api_version: kubevirt.io/v1
-    kind: '{{ item }}'
-    namespace: '{{ lr_reprotect_plan.destination_namespace }}'
-  loop: [VirtualMachine, VirtualMachineInstance]
-  register: lr_retired_vms
-  failed_when: lr_retired_vms.resources | length != 0
+  ansible.builtin.include_tasks: scope_read.yml
+  vars:
+    scope_plan: '{{ lr_reprotect_plan }}'
+    scope_side: destination
+    scope_queries:
+      - api_version: kubevirt.io/v1
+        kind: VirtualMachine
+      - api_version: kubevirt.io/v1
+        kind: VirtualMachineInstance
+- ansible.builtin.set_fact:
+    lr_retired_vms: '{{ lr_scope_result }}'
   no_log: true
+- ansible.builtin.assert:
+    that:
+      - not (lr_retired_vms.resources | length != 0)
 - name: Verify retained disk identities
-  kubernetes.core.k8s_info:
-    api_version: v1
-    kind: PersistentVolumeClaim
-    namespace: '{{ lr_reprotect_plan.destination_namespace }}'
-  register: lr_retired_pvcs
+  ansible.builtin.include_tasks: scope_read.yml
+  vars:
+    scope_plan: '{{ lr_reprotect_plan }}'
+    scope_side: destination
+    scope_queries:
+      - api_version: v1
+        kind: PersistentVolumeClaim
+- ansible.builtin.set_fact:
+    lr_retired_pvcs: '{{ lr_scope_result }}'
+  no_log: true
 - name: Inspect an already created reprotection relationship on retries
   kubernetes.core.k8s_info:
     api_version: '{{ recovery_api_version }}'
@@ -47,12 +59,13 @@
       - lr_resumed_mirror.resources[0].metadata.labels['app.kubernetes.io/managed-by'] | default('') == recovery_owner
       - lr_resumed_mirror.resources[0].spec.sourceApplicationUID == lr_reprotect_plan.application_uid
       - lr_resumed_mirror.resources[0].spec.desiredState == 'Established'
-      - "lr_resumed_mirror.resources[0].spec.namespaceMapping == [{'source': lr_reprotect_plan.source_namespace, 'destination': lr_reprotect_plan.destination_namespace}]"
+      - lr_resumed_mirror.resources[0].spec.namespaceMapping == (lr_reprotect_plan | lr_mapping | dict2items(key_name='source', value_name='destination'))
   when: lr_resumed_mirror.resources | length > 0
 - ansible.builtin.assert:
     that:
-      - lr_resumed_mirror.resources | length > 0 or lr_retired_pvcs.resources | map(attribute='metadata.uid') | difference(lr_reprotect_plan.retired_pvc_uids) | length == 0
-      - lr_retired_pvcs.resources | map(attribute='metadata.name') | difference(lr_reprotect_plan.pvcs) | length == 0
+      - lr_resumed_mirror.resources | length > 0 or lr_retired_pvcs.resources | map(attribute='metadata.uid') | difference(lr_reprotect_plan.retired_pvc_uids)
+        | length == 0
+      - lr_retired_pvcs.resources | lr_keys | difference(lr_reprotect_plan | lr_member_keys('pvcs', 'destination')) | length == 0
       - lr_retired_pvcs.resources | rejectattr('spec.storageClassName', 'equalto', lr_reprotect_plan.storage_class) | list | length == 0
 - name: Read destination schedules
   kubernetes.core.k8s_info:
@@ -65,7 +78,7 @@
     that:
       - item.metadata.labels['app.kubernetes.io/managed-by'] | default('') == recovery_owner
       - not item.spec.enabled | default(true)
-  loop: "{{ lr_retired_schedules.resources | selectattr('spec.applicationRef', 'equalto', lr_reprotect_plan.application) | list }}"
+  loop: '{{ lr_retired_schedules.resources | selectattr(''spec.applicationRef'', ''equalto'', lr_reprotect_plan.application) | list }}'
   loop_control:
     label: '{{ item.metadata.name }}'
 - name: Remove disabled destination schedules as required for reverse replication
@@ -78,7 +91,7 @@
     delete_options:
       preconditions:
         uid: '{{ item.metadata.uid }}'
-  loop: "{{ lr_retired_schedules.resources | selectattr('spec.applicationRef', 'equalto', lr_reprotect_plan.application) | list }}"
+  loop: '{{ lr_retired_schedules.resources | selectattr(''spec.applicationRef'', ''equalto'', lr_reprotect_plan.application) | list }}'
   loop_control:
     label: '{{ item.metadata.name }}'
 - name: Report whether destination disks must be recreated
@@ -94,4 +107,4 @@
   vars:
     replica_plan_input: '{{ lr_reprotect_plan }}'
 - ansible.builtin.debug:
-    msg: 'Cutover and reprotection completed. Active VMs remain on the recovered site; the original source is now the replica.'
+    msg: Cutover and reprotection completed. Active VMs remain on the recovered site; the original source is now the replica.

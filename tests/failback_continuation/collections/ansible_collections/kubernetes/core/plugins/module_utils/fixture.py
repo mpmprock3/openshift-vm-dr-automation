@@ -57,16 +57,18 @@ def run(action):
                 obj['status']['ready']=False
             if kind=='AppMirrorRelationship' and obj['spec']['desiredState']=='Promoted':
                 source='dr' if site=='dc' else 'dc'
-                sns=obj['spec']['namespaceMapping'][0]['source']
-                dns=obj['spec']['namespaceMapping'][0]['destination']
-                source_vm=next((x for x in db[source] if x['kind']=='VirtualMachine' and x['metadata'].get('namespace')==sns),None)
-                source_vm=source_vm or db['saved_vm'][source]
-                restored=copy.deepcopy(source_vm);restored['metadata'].update(namespace=dns,uid=str(uuid.uuid4()))
-                restored['status']={'ready':True};metadata(restored)
-                if db.get('restore_missing_disk'): restored['spec']['template']['spec']['volumes']=[]
-                rows[:]=[x for x in rows if not (x['kind'] in ['VirtualMachine','VirtualMachineInstance'] and x['metadata'].get('namespace')==dns)]
-                rows.append(restored)
-                rows.append({'kind':'VirtualMachineInstance','metadata':{'name':restored['metadata']['name'],'namespace':dns,'uid':str(uuid.uuid4())},'status':{'phase':'Running','conditions':[{'type':'Ready','status':'True'}]}})
+                for pair in obj['spec']['namespaceMapping']:
+                    sns,dns=pair['source'],pair['destination']
+                    source_vms=[x for x in db[source] if x['kind']=='VirtualMachine' and x['metadata'].get('namespace')==sns]
+                    if not source_vms:
+                        source_vms=[x for x in db.get('saved_vms',{}).get(source,[]) if x['metadata'].get('namespace')==sns]
+                    rows[:]=[x for x in rows if not (x['kind'] in ['VirtualMachine','VirtualMachineInstance'] and x['metadata'].get('namespace')==dns)]
+                    for source_vm in source_vms:
+                        restored=copy.deepcopy(source_vm);restored['metadata'].update(namespace=dns,uid=str(uuid.uuid4()))
+                        restored['status']={'ready':True};metadata(restored)
+                        if db.get('restore_missing_disk'): restored['spec']['template']['spec']['volumes']=[]
+                        rows.append(restored)
+                        rows.append({'kind':'VirtualMachineInstance','metadata':{'name':restored['metadata']['name'],'namespace':dns,'uid':str(uuid.uuid4())},'status':{'phase':'Running','conditions':[{'type':'Ready','status':'True'}]}})
                 obj['status']['state']='Promoted';obj['status']['conditions'].append({'type':'Promoted','status':'True'})
                 db['promotions']=db.get('promotions',0)+1
         elif p['state']=='absent':
@@ -85,33 +87,45 @@ def run(action):
             if kind=='Application':obj['status']={'state':'Ready','conditions':[{'type':'Ready','status':'True'}]}
             if kind in ['Snapshot','ShutdownSnapshot'] and 'status' not in obj:
                 app=next(x for x in rows if x['kind']=='Application' and x['metadata']['name']==obj['spec']['applicationRef'] and x['metadata'].get('namespace')==ns)
-                disks=[x for x in rows if x['kind']=='PersistentVolumeClaim' and x['metadata'].get('namespace')==ns]
+                scopes={x['namespace']:x.get('labelSelector',{}).get('matchLabels',{}) for x in app['spec']['includedNamespaces']}
+                def selected(x):
+                    n=x['metadata'].get('namespace')
+                    return n in scopes and all(x['metadata'].get('labels',{}).get(k)==v for k,v in scopes[n].items())
+                disks=[x for x in rows if x['kind']=='PersistentVolumeClaim' and selected(x)]
                 obj['status']={'state':'Completed','appArchivePath':app['metadata']['name']+'_'+app['metadata']['uid']+'/snapshots/'+obj['metadata']['name'], 'pvcs':[x['metadata']['uid'] for x in disks], 'volumeSnapshots':[{'name':x['metadata']['name']} for x in disks]}
                 if kind=='ShutdownSnapshot':
                     if db.get('fail_shutdown'): obj['status']['state']='Failed'
                     else:
-                        db.setdefault('saved_vm',{})[site]=copy.deepcopy(next(x for x in rows if x['kind']=='VirtualMachine' and x['metadata'].get('namespace')==ns))
-                        rows[:]=[x for x in rows if not (x['kind'] in ['VirtualMachine','VirtualMachineInstance'] and x['metadata'].get('namespace')==ns)]
+                        selected_vms=[x for x in rows if x['kind']=='VirtualMachine' and selected(x)]
+                        db.setdefault('saved_vms',{})[site]=copy.deepcopy(selected_vms)
+                        db.setdefault('saved_vm',{})[site]=copy.deepcopy(selected_vms[0])
+                        selected_keys={(x['metadata']['namespace'],x['metadata']['name']) for x in selected_vms}
+                        rows[:]=[x for x in rows if not (x['kind'] in ['VirtualMachine','VirtualMachineInstance'] and (x['metadata'].get('namespace'),x['metadata']['name']) in selected_keys)]
                         db['shutdowns']=db.get('shutdowns',0)+1
                         fault = db.get('shutdown_fault')
                         if fault == 'missing-disk': obj['status']['pvcs'] = []
+                        if fault == 'missing-second-disk': obj['status']['pvcs'] = obj['status']['pvcs'][:-1]
                         if fault == 'duplicate-disk': obj['status']['pvcs'] *= 2
                         if fault == 'missing-volume-snapshot': obj['status']['volumeSnapshots'] = []
                         if fault == 'wrong-archive': obj['status']['appArchivePath'] = app['metadata']['name']+'_'+app['metadata']['uid']+'/backups/not-a-snapshot'
                         if fault == 'restartable-vm': rows.append(copy.deepcopy(db['saved_vm'][site]))
             if kind=='AppMirrorRelationship':
                 source='dr' if site=='dc' else 'dc'
-                sns=obj['spec']['namespaceMapping'][0]['source'];dns=obj['spec']['namespaceMapping'][0]['destination']
+                mapping={x['source']:x['destination'] for x in obj['spec']['namespaceMapping']}
+                dns=ns
                 srcapp=next(x for x in db[source] if x['kind']=='Application' and x['metadata']['uid']==obj['spec']['sourceApplicationUID'])
+                expected=copy.deepcopy(srcapp['spec'])
+                for included in expected['includedNamespaces']:included['namespace']=mapping[included['namespace']]
+                expected['includedNamespaces'].sort(key=lambda x:x['namespace'])
                 if not any(x for x in rows if x['kind']=='Application' and x['metadata']['name']==srcapp['metadata']['name'] and x['metadata'].get('namespace')==dns):
-                    app=copy.deepcopy(srcapp);app['metadata'].update(namespace=dns,uid=str(uuid.uuid4()));app['spec']['includedNamespaces'][0]['namespace']=dns;metadata(app);rows.append(app)
+                    app=copy.deepcopy(srcapp);app['metadata'].update(namespace=dns,uid=str(uuid.uuid4()));app['spec']=expected;metadata(app);rows.append(app)
                 targetapp=next(x for x in rows if x['kind']=='Application' and x['metadata']['name']==srcapp['metadata']['name'] and x['metadata'].get('namespace')==dns)
-                expected=copy.deepcopy(srcapp['spec']);expected['includedNamespaces'][0]['namespace']=dns
                 if targetapp['spec']!=expected: m.fail_json(msg='Existing app definition differs; refuse reuse')
-                rows[:]=[x for x in rows if not (x['kind'] in ['VirtualMachine','VirtualMachineInstance'] and x['metadata'].get('namespace')==dns)]
-                for disk in [x for x in db[source] if x['kind']=='PersistentVolumeClaim' and x['metadata'].get('namespace')==sns]:
-                    if not any(x for x in rows if x['kind']=='PersistentVolumeClaim' and x['metadata'].get('namespace')==dns and x['metadata']['name']==disk['metadata']['name']):
-                        disk=copy.deepcopy(disk);disk['metadata'].update(namespace=dns,uid=str(uuid.uuid4()));metadata(disk);rows.append(disk)
+                for sns,dns in mapping.items():
+                    rows[:]=[x for x in rows if not (x['kind'] in ['VirtualMachine','VirtualMachineInstance'] and x['metadata'].get('namespace')==dns)]
+                    for disk in [x for x in db[source] if x['kind']=='PersistentVolumeClaim' and x['metadata'].get('namespace')==sns]:
+                        if not any(x for x in rows if x['kind']=='PersistentVolumeClaim' and x['metadata'].get('namespace')==dns and x['metadata']['name']==disk['metadata']['name']):
+                            disk=copy.deepcopy(disk);disk['metadata'].update(namespace=dns,uid=str(uuid.uuid4()));metadata(disk);rows.append(disk)
                 obj['status']={'state':'Established','destinationApplicationRef':srcapp['metadata']['name'],'lastTransferredSnapshot':{'name':'baseline','completionTimestamp':datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')},'conditions':[{'type':'LastTransferSucceeded','status':'True'}]}
         if db.get('fail_establish') and kind=='AppMirrorRelationship' and obj['spec']['desiredState']=='Established':
             obj['status']['state']='Establishing';obj['status']['error']='Injected transfer failure'

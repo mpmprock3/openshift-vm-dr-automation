@@ -25,21 +25,32 @@
           - fc_target_app.resources[0].metadata.uid == fc.original.application_uid
           - fc_target_app.resources[0].spec.resourceFilter | default({}) == {}
           - fc_target_app.resources[0].spec.includedClusterScopedResources | default([]) == []
-          - "fc_target_app.resources[0].spec.includedNamespaces == [{'namespace': fc.destination_namespace, 'labelSelector': {'matchLabels': {'vmdr.aap/protection-group': fc.application}}}]"
-    - name: Read target VMIs immediately before reverse establishment
-      kubernetes.core.k8s_info:
-        api_version: kubevirt.io/v1
-        kind: VirtualMachineInstance
-        namespace: '{{ fc.destination_namespace }}'
-      register: fc_target_vmis
+          - fc_target_app.resources[0].spec.includedNamespaces | sort(attribute='namespace') == (fc.label_plan | lr_app_scope('destination'))
+    - ansible.builtin.include_role:
+        name: label_recovery
+        tasks_from: scope_read
+      vars:
+        scope_plan: '{{ fc.label_plan }}'
+        scope_side: destination
+        scope_queries:
+          - api_version: kubevirt.io/v1
+            kind: VirtualMachineInstance
+    - ansible.builtin.set_fact:
+        fc_target_vmis: '{{ lr_scope_result }}'
+      no_log: true
     - ansible.builtin.assert:
         that: fc_target_vmis.resources | length == 0
-    - name: Read target definitions without exposing guest configuration
-      kubernetes.core.k8s_info:
-        api_version: kubevirt.io/v1
-        kind: VirtualMachine
-        namespace: '{{ fc.destination_namespace }}'
-      register: fc_target_vms
+    - ansible.builtin.include_role:
+        name: label_recovery
+        tasks_from: scope_read
+      vars:
+        scope_plan: '{{ fc.label_plan }}'
+        scope_side: destination
+        scope_queries:
+          - api_version: kubevirt.io/v1
+            kind: VirtualMachine
+    - ansible.builtin.set_fact:
+        fc_target_vms: '{{ lr_scope_result }}'
       no_log: true
     - name: Allow only enrolled stopped VM incarnations for controller-managed replacement
       ansible.builtin.assert:
@@ -51,12 +62,19 @@
       no_log: true
     - ansible.builtin.set_fact:
         fc_verified_stopped_vms: '{{ fc_target_vms.resources | map(attribute="metadata.uid") | list }}'
-    - kubernetes.core.k8s_info:
-        api_version: v1
-        kind: PersistentVolumeClaim
-        namespace: '{{ fc.destination_namespace }}'
-      register: fc_target_pvcs
+    - ansible.builtin.include_role:
+        name: label_recovery
+        tasks_from: scope_read
+      vars:
+        scope_plan: '{{ fc.label_plan }}'
+        scope_side: destination
+        scope_queries:
+          - api_version: v1
+            kind: PersistentVolumeClaim
+    - ansible.builtin.set_fact:
+        fc_target_pvcs: '{{ lr_scope_result }}'
+      no_log: true
     - ansible.builtin.assert:
         that:
           - fc_target_pvcs.resources | map(attribute='metadata.uid') | sort == fc.original.continuation_pvc_uids | sort
-          - fc_target_pvcs.resources | map(attribute='metadata.name') | sort == fc.label_plan.pvcs | sort
+          - fc_target_pvcs.resources | lr_keys == fc.label_plan | lr_member_keys('pvcs', 'destination')

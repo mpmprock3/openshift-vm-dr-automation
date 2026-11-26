@@ -20,16 +20,22 @@
       - lr_cutover_amr.resources[0].status.state in ['Established', 'Promoted']
       - lr_cutover_amr.resources[0].status.error | default('', true) | length == 0
       - lr_cutover_amr.resources[0].status.lastTransferredSnapshot.name | default('') | length > 0
-      - lr_cutover_amr.resources[0].status.conditions | selectattr('type', 'equalto', 'LastTransferSucceeded') | selectattr('status', 'equalto', 'True') | list | length == 1
+      - lr_cutover_amr.resources[0].status.conditions | selectattr('type', 'equalto', 'LastTransferSucceeded') | selectattr('status', 'equalto',
+        'True') | list | length == 1
 - name: Verify target disk set
-  kubernetes.core.k8s_info:
-    api_version: v1
-    kind: PersistentVolumeClaim
-    namespace: '{{ lr_plan.destination_namespace }}'
-  register: lr_target_disks
+  ansible.builtin.include_tasks: scope_read.yml
+  vars:
+    scope_plan: '{{ lr_plan }}'
+    scope_side: destination
+    scope_queries:
+      - api_version: v1
+        kind: PersistentVolumeClaim
+- ansible.builtin.set_fact:
+    lr_target_disks: '{{ lr_scope_result }}'
+  no_log: true
 - ansible.builtin.assert:
     that:
-      - lr_target_disks.resources | map(attribute='metadata.name') | sort == lr_plan.pvcs | sort
+      - lr_target_disks.resources | lr_keys == lr_plan | lr_member_keys('pvcs', 'destination')
       - lr_target_disks.resources | map(attribute='status.phase') | unique | list == ['Bound']
 - name: Read destination compute and virtualization settings
   kubernetes.core.k8s_info:
@@ -45,7 +51,8 @@
   ansible.builtin.assert:
     that:
       - lr_kubevirt.resources | length == 1
-      - not (lr_kubevirt.resources[0].spec.configuration.developerConfiguration.useEmulation | default(false)) or recovery_allow_emulation | default(false) | bool
+      - not (lr_kubevirt.resources[0].spec.configuration.developerConfiguration.useEmulation | default(false)) or recovery_allow_emulation | default(false)
+        | bool
 - ansible.builtin.set_fact:
     lr_compute_candidates: []
 - ansible.builtin.set_fact:
@@ -54,13 +61,15 @@
   when:
     - not item.spec.unschedulable | default(false)
     - item.status.conditions | selectattr('type', 'equalto', 'Ready') | selectattr('status', 'equalto', 'True') | list | length == 1
-    - item.status.allocatable['devices.kubevirt.io/kvm'] | default('0') | int > 0 or (recovery_allow_emulation | default(false) | bool and lr_kubevirt.resources[0].spec.configuration.developerConfiguration.useEmulation | default(false))
+    - item.status.allocatable['devices.kubevirt.io/kvm'] | default('0') | int > 0 or (recovery_allow_emulation | default(false) | bool and lr_kubevirt.resources[0].spec.configuration.developerConfiguration.useEmulation
+      | default(false))
   no_log: true
 - ansible.builtin.assert:
     that: lr_compute_candidates | length > 0
 - name: Produce a deterministic retry identity from the actual mirror UID
   ansible.builtin.set_fact:
-    label_cutover_plan: "{{ lr_plan | combine({'mirror_uid': lr_cutover_amr.resources[0].metadata.uid, 'final_name': 'final-' ~ lr_cutover_amr.resources[0].metadata.uid, 'checked_at': now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ')}) }}"
+    label_cutover_plan: '{{ lr_plan | combine({''mirror_uid'': lr_cutover_amr.resources[0].metadata.uid, ''final_name'': ''final-'' ~ lr_cutover_amr.resources[0].metadata.uid,
+      ''checked_at'': now(utc=true, fmt=''%Y-%m-%dT%H:%M:%SZ'')}) }}'
 - name: Prepare internal stage outputs
   ansible.builtin.set_fact:
     lr_outputs:

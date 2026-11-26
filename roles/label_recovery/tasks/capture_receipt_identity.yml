@@ -3,7 +3,7 @@
   kubernetes.core.k8s_info:
     api_version: kubevirt.io/v1
     kind: VirtualMachine
-    namespace: '{{ lr_plan.destination_namespace }}'
+    namespace: '{{ lr_plan | lr_vm_ns(item, ''destination'') }}'
     name: '{{ item.name }}'
   loop: '{{ lr_plan.vms }}'
   register: lr_receipt_vms
@@ -12,9 +12,9 @@
   kubernetes.core.k8s_info:
     api_version: v1
     kind: PersistentVolumeClaim
-    namespace: '{{ lr_plan.destination_namespace }}'
-    name: '{{ item }}'
-  loop: '{{ lr_plan.pvcs }}'
+    namespace: '{{ item.namespace }}'
+    name: '{{ item.name }}'
+  loop: '{{ lr_plan | lr_pvc_refs(''destination'') }}'
   register: lr_receipt_disks
 - ansible.builtin.set_fact:
     lr_recovered_ids:

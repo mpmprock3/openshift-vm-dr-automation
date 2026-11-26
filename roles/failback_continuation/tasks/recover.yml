@@ -25,11 +25,13 @@
       kubernetes.core.k8s_info:
         api_version: kubevirt.io/v1
         kind: VirtualMachine
-        namespace: '{{ fc.destination_namespace }}'
+        namespace: '{{ (fc_current_plan | lr_vm_ns(item, ''source'')) if fc_current_plan.source_api == cluster_api else (fc.cutover | lr_vm_ns(item,
+          ''destination'')) }}'
         name: '{{ item.name }}'
       loop: '{{ fc_current_plan.vms if fc_current_plan.source_api == cluster_api else fc.cutover.vms }}'
       register: fc_ready_vm
-      failed_when: fc_ready_vm.resources | length != 1 or not fc_ready_vm.resources[0].status.ready | default(false) or (fc_current_plan.source_api == cluster_api and fc_ready_vm.resources[0].metadata.uid != item.uid)
+      failed_when: fc_ready_vm.resources | length != 1 or not fc_ready_vm.resources[0].status.ready | default(false) or (fc_current_plan.source_api
+        == cluster_api and fc_ready_vm.resources[0].metadata.uid != item.uid)
       no_log: true
 - name: Activate recovered PROD protection and prepare forward replication
   ansible.builtin.include_role:

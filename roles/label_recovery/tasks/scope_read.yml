@@ -1,0 +1,17 @@
+---
+- name: Read each explicitly mapped workload namespace
+  kubernetes.core.k8s_info:
+    api_version: '{{ scope_item.api_version }}'
+    kind: '{{ scope_item.kind }}'
+    namespace: '{{ scope_item.namespace }}'
+    label_selectors: '{{ scope_item.label_selectors | default(omit) }}'
+  loop: '{{ scope_plan | lr_queries(scope_side, scope_queries) }}'
+  loop_control:
+    loop_var: scope_item
+  register: lr_scope_queries
+  no_log: true
+- ansible.builtin.set_fact:
+    lr_scope_result:
+      resources: '{{ lr_scope_queries.results | map(attribute="resources") | flatten }}'
+      results: '{{ lr_scope_queries.results }}'
+  no_log: true

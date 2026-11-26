@@ -1,0 +1,32 @@
+---
+- name: Read each DR namespace before automatic adoption
+  kubernetes.core.k8s_info:
+    api_version: '{{ item.api }}'
+    kind: '{{ item.kind }}'
+    namespace: '{{ fc_scope_namespace }}'
+  loop:
+    - api: kubevirt.io/v1
+      kind: VirtualMachine
+    - api: v1
+      kind: PersistentVolumeClaim
+    - api: apps/v1
+      kind: Deployment
+    - api: apps/v1
+      kind: StatefulSet
+    - api: apps/v1
+      kind: DaemonSet
+    - api: batch/v1
+      kind: Job
+  register: fc_namespace_members
+  no_log: true
+- name: Require exactly the enrolled VMs and disks in this namespace
+  ansible.builtin.assert:
+    that:
+      - fc_namespace_members.results[0].resources | map(attribute='metadata.name') | sort == fc_expected | map(attribute='vm') | map('basename')
+        | sort
+      - fc_namespace_members.results[1].resources | map(attribute='metadata.name') | sort == fc_expected | map(attribute='disks') | flatten |
+        map(attribute='pvc') | unique | sort
+      - fc_namespace_members.results[2:] | map(attribute='resources') | flatten | length == 0
+    fail_msg: DR namespace {{ fc_scope_namespace }} contains workloads outside the selected group. Nothing will be adopted.
+  vars:
+    fc_expected: '{{ failback_plan.selected_vms | selectattr(''destination_namespace'', ''equalto'', fc_scope_namespace) | list }}'

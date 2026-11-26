@@ -65,7 +65,7 @@
           choices: "{{ (failback_choices | unique | sort) if failback_choices | length > 0 else ['No eligible promoted groups — refresh after failover'] }}"
 - name: Explain and select the destination policy for complete failback
   ansible.builtin.set_fact:
-    failback_choice_survey: "{{ failback_choice_survey | combine({'spec': failback_choice_survey.spec + [{'question_name': 'Where should the VM return on PROD?', 'question_description': 'First return creates a dedicated PROD namespace and retains the original stopped VM/disk. Later cycles reuse that new namespace. Original namespace reuse is not supported by this continuation.', 'variable': 'failback_destination_policy', 'type': 'multiplechoice', 'required': true, 'default': 'Dedicated PROD namespace (retain old copy)', 'choices': ['Dedicated PROD namespace (retain old copy)']}]}) }}"
+    failback_choice_survey: "{{ failback_choice_survey | combine({'spec': failback_choice_survey.spec + [{'question_name': 'Where should the VM return on PROD?', 'question_description': 'First return creates a dedicated PROD namespace for each DR namespace and retains the original stopped VMs/disks. Later cycles reuse those namespaces. Original namespace reuse is not supported by this continuation.', 'variable': 'failback_destination_policy', 'type': 'multiplechoice', 'required': true, 'default': 'Dedicated PROD namespace (retain old copy)', 'choices': ['Dedicated PROD namespace (retain old copy)']}]}) }}"
   when: failback_survey_template_name | default('') == 'Fail Back to DC'
 - name: Add optional application verification for complete failback
   ansible.builtin.set_fact:

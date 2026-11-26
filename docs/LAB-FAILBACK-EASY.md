@@ -180,3 +180,22 @@ namespace. Never start the retained old PROD `my-vm/test-vm`.
 This is a lab qualification procedure. The code has automated API-fixture tests;
 your lab run and guest-data checks establish whether it works on your actual
 OpenShift and NetApp environment.
+
+## A group with VMs in multiple namespaces
+
+Use the same **Fail Back to DC** workflow and select the same protected group. You do not need one launch per namespace, a new protection plan, or manual VM enrollment.
+
+On the first return, each distinct DR workload namespace maps to its own dedicated `prod-return-...` namespace on PROD. An application-control namespace, if separate, also gets its own mapping. The original stopped PROD copies remain untouched. The **Begin Failback** output shows `namespace_mapping_dr_to_prod`; use that table to locate the recovered VMs.
+
+For example, `payments/test-vm` and `banking/test-vm` remain separate VMs, in separate return namespaces, even though their names match. Their PVCs are checked by namespace and UID. Subsequent failover/failback cycles reuse these mappings.
+
+The workflow takes one final application shutdown snapshot and verifies the complete disk set across the group before promoting PROD. It does not promote a separate recovery point per namespace. All namespaces must be dedicated to the enrolled VM group; one storage class and the same AppVault name at both sites are still required. VM readiness alone does not prove guest data correctness: verify your DR-written files/application data in every recovered VM.
+
+If your earlier attempt failed at `failback_plan.namespace_mapping | length == 1`:
+
+1. Sync the existing AAP project to the updated `main` branch.
+2. Run **Refresh Failback Groups** and open a new **Fail Back to DC** launch form.
+3. Select the **same group**, retain the dedicated PROD namespace policy, and launch the whole workflow.
+4. Verify the mapping and all recovered VMs in the job output.
+
+Do not remove the old catalogs, relabel disks, or re-enroll the running DR VMs. No new workflow templates are needed. Keep all stage jobs on the same project revision, and do not downgrade code during an incomplete operation.

@@ -5,8 +5,10 @@
   ansible.builtin.assert:
     that:
       - lr_plan.source_api == (recovery_cluster_api | default(lookup('env', 'K8S_AUTH_HOST'))) | regex_replace('/$', '')
-      - (now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') | to_datetime('%Y-%m-%dT%H:%M:%SZ') - lr_plan.checked_at | to_datetime('%Y-%m-%dT%H:%M:%SZ')).total_seconds() < 600
-      - (now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') | to_datetime('%Y-%m-%dT%H:%M:%SZ') - lr_plan.checked_at | to_datetime('%Y-%m-%dT%H:%M:%SZ')).total_seconds() >= 0
+      - (now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') | to_datetime('%Y-%m-%dT%H:%M:%SZ') - lr_plan.checked_at | to_datetime('%Y-%m-%dT%H:%M:%SZ')).total_seconds()
+        < 600
+      - (now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') | to_datetime('%Y-%m-%dT%H:%M:%SZ') - lr_plan.checked_at | to_datetime('%Y-%m-%dT%H:%M:%SZ')).total_seconds()
+        >= 0
 - name: Read source selection
   kubernetes.core.k8s_info:
     api_version: '{{ recovery_api_version }}'
@@ -21,7 +23,7 @@
       - lr_shutdown_app.resources[0].metadata.uid == lr_plan.application_uid
       - lr_shutdown_app.resources[0].spec.resourceFilter | default({}) == {}
       - lr_shutdown_app.resources[0].spec.includedClusterScopedResources | default([]) == []
-      - "lr_shutdown_app.resources[0].spec.includedNamespaces == [{'namespace': lr_plan.source_namespace, 'labelSelector': {'matchLabels': {lr_plan.label_key: lr_plan.application}}}]"
+      - lr_shutdown_app.resources[0].spec.includedNamespaces | sort(attribute='namespace') == (lr_plan | lr_app_scope('source'))
 - name: Read final snapshot on retries
   kubernetes.core.k8s_info:
     api_version: '{{ recovery_api_version }}'
@@ -37,13 +39,17 @@
       - lr_previous_final.resources[0].metadata.labels['app.kubernetes.io/managed-by'] | default('') == recovery_owner
   when: lr_previous_final.resources | length > 0
 - name: Verify selected source VMs before first shutdown
-  kubernetes.core.k8s_info:
-    api_version: kubevirt.io/v1
-    kind: VirtualMachine
-    namespace: '{{ lr_plan.source_namespace }}'
-    label_selectors:
-      - '{{ lr_plan.label_key }}={{ lr_plan.application }}'
-  register: lr_shutdown_vms
+  ansible.builtin.include_tasks: scope_read.yml
+  vars:
+    scope_plan: '{{ lr_plan }}'
+    scope_side: source
+    scope_queries:
+      - api_version: kubevirt.io/v1
+        kind: VirtualMachine
+        label_selectors:
+          - '{{ lr_plan.label_key }}={{ lr_plan.application }}'
+- ansible.builtin.set_fact:
+    lr_shutdown_vms: '{{ lr_scope_result }}'
   no_log: true
 - name: Require original selected VM incarnations
   ansible.builtin.assert:
@@ -52,13 +58,18 @@
       - lr_shutdown_vms.resources | map(attribute='metadata.name') | sort == lr_plan.vms | map(attribute='name') | sort
   when: lr_previous_final.resources | length == 0
 - name: Verify selected source PVC incarnations
-  kubernetes.core.k8s_info:
-    api_version: v1
-    kind: PersistentVolumeClaim
-    namespace: '{{ lr_plan.source_namespace }}'
-    label_selectors:
-      - '{{ lr_plan.label_key }}={{ lr_plan.application }}'
-  register: lr_shutdown_pvcs
+  ansible.builtin.include_tasks: scope_read.yml
+  vars:
+    scope_plan: '{{ lr_plan }}'
+    scope_side: source
+    scope_queries:
+      - api_version: v1
+        kind: PersistentVolumeClaim
+        label_selectors:
+          - '{{ lr_plan.label_key }}={{ lr_plan.application }}'
+- ansible.builtin.set_fact:
+    lr_shutdown_pvcs: '{{ lr_scope_result }}'
+  no_log: true
 - ansible.builtin.assert:
     that: lr_shutdown_pvcs.resources | map(attribute='metadata.uid') | sort == lr_plan.pvc_uids | sort
 - name: Read source schedules
@@ -70,7 +81,7 @@
 - name: Refuse to alter unmanaged schedules
   ansible.builtin.assert:
     that: item.metadata.labels['app.kubernetes.io/managed-by'] | default('') == recovery_owner
-  loop: "{{ lr_source_schedules.resources | selectattr('spec.applicationRef', 'equalto', lr_plan.application) | list }}"
+  loop: '{{ lr_source_schedules.resources | selectattr(''spec.applicationRef'', ''equalto'', lr_plan.application) | list }}'
   loop_control:
     label: '{{ item.metadata.name }}'
 - name: Disable this application's managed schedules
@@ -83,7 +94,7 @@
     definition:
       spec:
         enabled: false
-  loop: "{{ lr_source_schedules.resources | selectattr('spec.applicationRef', 'equalto', lr_plan.application) | list }}"
+  loop: '{{ lr_source_schedules.resources | selectattr(''spec.applicationRef'', ''equalto'', lr_plan.application) | list }}'
   loop_control:
     label: '{{ item.metadata.name }}'
 - name: Record cutover intent before shutdown
@@ -135,7 +146,7 @@
   kubernetes.core.k8s_info:
     api_version: kubevirt.io/v1
     kind: VirtualMachineInstance
-    namespace: '{{ lr_plan.source_namespace }}'
+    namespace: '{{ lr_plan | lr_vm_ns(item, ''source'') }}'
     name: '{{ item.name }}'
   loop: '{{ lr_plan.vms }}'
   register: lr_stopped
@@ -147,11 +158,12 @@
   kubernetes.core.k8s_info:
     api_version: kubevirt.io/v1
     kind: VirtualMachine
-    namespace: '{{ lr_plan.source_namespace }}'
+    namespace: '{{ lr_plan | lr_vm_ns(item, ''source'') }}'
     name: '{{ item.name }}'
   loop: '{{ lr_plan.vms }}'
   register: lr_definitions
-  failed_when: lr_definitions.resources | length > 0 and not (lr_definitions.resources[0].spec.runStrategy | default('') == 'Halted' or lr_definitions.resources[0].spec.running | default(true) == false)
+  failed_when: lr_definitions.resources | length > 0 and not (lr_definitions.resources[0].spec.runStrategy | default('') == 'Halted' or lr_definitions.resources[0].spec.running
+    | default(true) == false)
   no_log: true
 - name: Prepare internal stage outputs
   ansible.builtin.set_fact:
@@ -160,7 +172,7 @@
         mirror_uid: '{{ lr_plan.mirror_uid }}'
         uid: '{{ lr_ready.resources[0].metadata.uid }}'
         archive: '{{ lr_ready.resources[0].status.appArchivePath }}'
-        checked_at: "{{ now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') }}"
+        checked_at: '{{ now(utc=true, fmt=''%Y-%m-%dT%H:%M:%SZ'') }}'
 - name: Pass exact recovery point to promotion stage
   register: lr_stage_artifacts
   ansible.builtin.set_stats:
@@ -171,5 +183,5 @@
         mirror_uid: '{{ lr_plan.mirror_uid }}'
         uid: '{{ lr_ready.resources[0].metadata.uid }}'
         archive: '{{ lr_ready.resources[0].status.appArchivePath }}'
-        checked_at: "{{ now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') }}"
+        checked_at: '{{ now(utc=true, fmt=''%Y-%m-%dT%H:%M:%SZ'') }}'
   when: recovery_export_artifacts | default(true) | bool

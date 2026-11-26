@@ -93,10 +93,10 @@ Never retry with a different plan name or namespace to bypass a failure.
 
 ## Qualification and limits
 
-- One dedicated source namespace per group (exactly its enrolled VMs and disks),
+- One or more dedicated DR workload namespaces per group (exactly the enrolled VMs and disks),
   one Trident storage class, and matching AppVault
   names on both clusters are currently supported; unsupported layouts stop.
-- First legacy adoption targets a dedicated PROD namespace. Old stopped copies
+- First legacy adoption targets a distinct dedicated PROD namespace for each DR namespace. Old stopped copies
   and retained snapshot/journal history require an administrator retention policy.
 - Complete source isolation still depends on preventing external restarts.
   Workflow serialization does not fence GitOps, administrators or other tools.
@@ -113,8 +113,14 @@ Use the repository's ansible-core 2.19 / kubernetes.core dependencies. With the
 virtual environment on PATH, run `python tests/failback_continuation/run.py`.
 Also run `python tests/failback_continuation/survey.py` and
 `python tests/failback_continuation/setup.py` to validate the survey and idempotent
-AAP setup against a local TLS API double.
+AAP setup against a local TLS API double. Multi-namespace coverage is in
+`python tests/failback_continuation/multi_namespace.py` and the same command with
+`--separate-control`. After that run, `python tests/failback_continuation/multi_resume.py`
+checks an interruption after promotion and a replaced disk in the second namespace. Pure mapping checks are in
+`python tests/failback_continuation/scope_unit.py`.
 
 The harness uses native Ansible jobs and captures real `set_stats` artifacts in
 fresh job processes. Its Kubernetes API doubles are test-only and do not model
 storage bytes or guest consistency. Never install the test collections in AAP.
+
+Multi-namespace recovery uses one Application/AMR and one verified final shutdown snapshot for the whole group. Namespace/name pairs distinguish identically named VMs and PVCs. The saved return mapping is inverted when publishing the next failover catalog, and reused on later failbacks. See [the lab guide](LAB-FAILBACK-EASY.md#a-group-with-vms-in-multiple-namespaces).

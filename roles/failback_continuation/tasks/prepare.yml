@@ -21,18 +21,21 @@
   kubernetes.core.k8s_info:
     api_version: v1
     kind: Namespace
-    name: '{{ fc.destination_namespace }}'
+    name: '{{ item }}'
   register: fc_namespace
+  loop: '{{ fc.namespace_mapping.values() | list }}'
 - ansible.builtin.assert:
     that:
-      - fc_namespace.resources[0].metadata.labels['app.kubernetes.io/managed-by'] | default('') == fc_owner
-      - fc_namespace.resources[0].metadata.labels['vmdr.aap/protection-group'] | default('') == fc.application
-  when: fc_namespace.resources | length > 0
+      - item.resources[0].metadata.labels['app.kubernetes.io/managed-by'] | default('') == fc_owner
+      - item.resources[0].metadata.labels['vmdr.aap/protection-group'] | default('') == fc.application
+  when: item.resources | length > 0
+  loop: '{{ fc_namespace.results }}'
 - name: Remove only the enrolled original PROD application's managed schedules
   ansible.builtin.include_role:
     name: vmdr
     tasks_from: reverse_remove_schedule
   when: fc.cutover is not defined and fc_prepared_mirror.resources | length == 0
-  loop: "{{ failback_dc_schedules.resources | default([]) | selectattr('spec.applicationRef', 'equalto', fc.original.application_name) | list }}"
+  loop: '{{ failback_dc_schedules.resources | default([]) | selectattr(''spec.applicationRef'', ''equalto'', fc.original.application_name) | list
+    }}'
   loop_control:
     loop_var: reverse_schedule

@@ -38,6 +38,8 @@ oc --context=DR get amr -A
 
 For your earlier lab, the original namespace was `my-vm`. A successful failback can also leave a dedicated `prod-return-...` namespace on PROD. Include **both** if you want to discard both copies. Copy the actual namespace name from your output.
 
+For a multi-namespace group, include every dedicated return namespace shown in the failback job’s `namespace_mapping_dr_to_prod`, including an application-control namespace that has no VM. Include the dedicated DR mirror/control namespace and all of its workload namespaces on DR as well. The AMR listing above helps identify the control namespace.
+
 Never enter infrastructure namespaces or a namespace shared with another application. The job blocks known infrastructure namespace names and namespaces containing AppVaults, Deployments, StatefulSets or DaemonSets. These checks do not replace your responsibility to select only disposable lab namespaces. Workloads in `default` require separate manual cleanup; this job deliberately refuses to delete `default`.
 
 ## 3. Preview
